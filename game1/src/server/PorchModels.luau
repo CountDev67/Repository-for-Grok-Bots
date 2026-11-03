@@ -102,9 +102,10 @@ function PorchModels.Spawn(kind: string, position: Vector3, parent: Instance): M
 		mark.CanCollide = false
 		model.PrimaryPart = pedestal
 		local board = Instance.new("BillboardGui")
-		board.Size = UDim2.fromOffset(160, 40)
+		board.Size = UDim2.fromScale(4, 1.2)
 		board.StudsOffset = Vector3.new(0, 3.2, 0)
 		board.AlwaysOnTop = false
+		board.MaxDistance = 45
 		board.Parent = bag
 		local label = Instance.new("TextLabel")
 		label.BackgroundTransparency = 1
@@ -114,6 +115,40 @@ function PorchModels.Spawn(kind: string, position: Vector3, parent: Instance): M
 		label.TextColor3 = Color3.fromRGB(255, 228, 180)
 		label.TextScaled = true
 		label.Parent = board
+	elseif kind == "cryptkey" then
+		-- A big goofy skeleton key hovering over its pad.
+		local gold = Color3.fromRGB(255, 200, 70)
+		local shaft = part(
+			model,
+			"Shaft",
+			Vector3.new(0.6, 0.6, 4),
+			origin * CFrame.new(0, 2.6, 0),
+			gold,
+			Enum.Material.Metal
+		)
+		shaft.CanCollide = false
+		local bow = part(
+			model,
+			"Bow",
+			Vector3.new(0.5, 2.4, 2.4),
+			origin * CFrame.new(0, 2.6, -2.6) * CFrame.Angles(0, math.rad(90), 0),
+			Color3.fromRGB(170, 70, 255),
+			Enum.Material.Neon
+		)
+		bow.Shape = Enum.PartType.Cylinder
+		bow.CanCollide = false
+		for index, depth in { 1.4, 0.7 } do
+			local tooth = part(
+				model,
+				"Tooth" .. tostring(index),
+				Vector3.new(0.4, 1, 0.5),
+				origin * CFrame.new(0, 2.0, depth),
+				gold,
+				Enum.Material.Metal
+			)
+			tooth.CanCollide = false
+		end
+		model.PrimaryPart = shaft
 	else
 		part(
 			model,

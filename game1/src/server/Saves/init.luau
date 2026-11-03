@@ -1,10 +1,12 @@
 --!strict
 -- One DataStore, session-locked, with retries.
--- Studio without API access falls back to memory for this server only.
+-- Studio without API access (or an unpublished place) falls back to an
+-- in-memory session store for this server only. Every DataStore touch is
+-- pcall-wrapped; the first access failure flips to memory and warns once.
 -- The `base` field is whatever table BaseService.ExportState returns.
 
 local Players = game:GetService("Players")
-local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
 
 local Lock = require(script.Lock)
 local Document = require(script.Document)
@@ -21,6 +23,7 @@ local BUSY_WAIT = 2
 
 local store: any = nil
 local usingMemory = false
+local warnedMemory = false
 local studioJob: string? = nil
 local closing = false
 local loaded: { [number]: boolean } = {}
@@ -67,6 +70,32 @@ local function isStudioAccessError(err: any): boolean
 	return string.find(text, "studio access", 1, true) ~= nil
 		or string.find(text, "api access", 1, true) ~= nil
 		or string.find(text, "must publish", 1, true) ~= nil
+		or string.find(text, "publish this place", 1, true) ~= nil
+		or string.find(text, "not allowed", 1, true) ~= nil
+		or string.find(text, "forbidden", 1, true) ~= nil
+end
+
+local function useMemory(reason: any)
+	if not usingMemory then
+		usingMemory = true
+		store = memoryStore()
+	end
+	if not warnedMemory then
+		warnedMemory = true
+		warn(
+			"[CountCrackula] DataStore unavailable ("
+				.. tostring(reason)
+				.. "). Profiles are kept in memory for this server only. Publish the place and enable"
+				.. " Studio API access to save for real."
+		)
+	end
+end
+
+local function openLiveStore(): (boolean, any)
+	return pcall(function()
+		local service = game:GetService("DataStoreService")
+		return service:GetDataStore(STORE_NAME)
+	end)
 end
 
 local function update(key: string, transform: (any) -> any): (boolean, any)
@@ -79,6 +108,11 @@ local function update(key: string, transform: (any) -> any): (boolean, any)
 			return true, result
 		end
 		lastErr = result
+		if not usingMemory and isStudioAccessError(result) then
+			-- Access went away mid-session (or was never there): fall back once
+			-- and retry this write against memory.
+			useMemory(result)
+		end
 		if attempt < WRITE_ATTEMPTS then
 			task.wait(2 ^ (attempt - 1))
 		end
@@ -113,21 +147,27 @@ function Saves.UsingMemory(): boolean
 end
 
 function Saves.Start()
-	local live = DataStoreService:GetDataStore(STORE_NAME)
-	local probeOk, probeErr = pcall(function()
-		live:UpdateAsync("__probe", function()
-			return nil
-		end)
-	end)
-	if probeOk then
-		store = live
-	elseif isStudioAccessError(probeErr) then
-		usingMemory = true
-		store = memoryStore()
-		warn("[CountCrackula] DataStore unavailable. This server keeps profiles in memory only.")
+	local isStudio = RunService:IsStudio()
+	local openOk, live = openLiveStore()
+	if not openOk then
+		useMemory(live)
+	elseif game.PlaceId == 0 and isStudio then
+		-- Unpublished Studio file: DataStores can never work here.
+		useMemory("unpublished place")
 	else
-		store = live
-		warn("[CountCrackula] DataStore probe failed: " .. tostring(probeErr))
+		local probeOk, probeErr = pcall(function()
+			live:UpdateAsync("__probe", function()
+				return nil
+			end)
+		end)
+		if probeOk then
+			store = live
+		elseif isStudio or isStudioAccessError(probeErr) then
+			useMemory(probeErr)
+		else
+			store = live
+			warn("[CountCrackula] DataStore probe failed, will keep retrying: " .. tostring(probeErr))
+		end
 	end
 
 	task.spawn(function()
@@ -146,12 +186,17 @@ function Saves.Start()
 		end
 	end)
 
-	game:BindToClose(function()
-		closing = true
-		for _, player in Players:GetPlayers() do
-			Saves.Close(player)
-		end
+	local bound, bindErr = pcall(function()
+		game:BindToClose(function()
+			closing = true
+			for _, player in Players:GetPlayers() do
+				Saves.Close(player)
+			end
+		end)
 	end)
+	if not bound then
+		warn("[CountCrackula] BindToClose unavailable: " .. tostring(bindErr))
+	end
 end
 
 local function claim(player: Player): (boolean, any)

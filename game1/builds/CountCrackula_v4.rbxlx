@@ -1,0 +1,6307 @@
+<roblox version="4">
+  <Item class="Lighting" referent="0">
+    <Properties>
+      <string name="Name">Lighting</string>
+      <float name="Brightness">1.8</float>
+      <float name="ClockTime">0.4</float>
+      <bool name="GlobalShadows">true</bool>
+      <token name="Technology">4</token>
+    </Properties>
+  </Item>
+  <Item class="Players" referent="1">
+    <Properties>
+      <string name="Name">Players</string>
+      <float name="RespawnTime">2.5</float>
+    </Properties>
+  </Item>
+  <Item class="ReplicatedStorage" referent="2">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="3">
+      <Properties>
+        <string name="Name">Shared</string>
+      </Properties>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">BaseConfig</string>
+          <string name="Source"><![CDATA[--!strict
+-- TODO(base-team): Replace these placeholder tiers with the real tycoon.
+-- Tier 1's price matches the three porch pads (50 + 100 + 150). The slice
+-- charges those pads, then sets BaseService tier to 1. Tier 2 is the porch's
+-- Crypt Key (PorchPads.Upgrade, 1500 = 10 Graveyard Rugby Rush runs) and opens
+-- Sore Foot Lava Crypt. Tier 3 is still a stub for droppers you have not built
+-- yet. See docs/PAYOUT_CURVE.md before retuning.
+
+local BaseConfig = {
+	tiers = {
+		{
+			tier = 1,
+			id = "porch",
+			name = "Porch",
+			price = 300,
+			blurb = "Bench, ice bath, and a delivery-bag shrine.",
+		},
+		{
+			tier = 2,
+			id = "cryptkey",
+			name = "Crypt Key",
+			price = 1500,
+			blurb = "Opens Sore Foot Lava Crypt. TODO(base-team): droppers can raise this.",
+		},
+		{
+			tier = 3,
+			id = "keep",
+			name = "Castle Keep",
+			price = 80000,
+			blurb = "TODO(base-team): endgame base. Placeholder price only.",
+		},
+	},
+}
+
+function BaseConfig.Get(tier: number)
+	for _, entry in BaseConfig.tiers do
+		if entry.tier == tier then
+			return entry
+		end
+	end
+	return nil
+end
+
+return BaseConfig
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">CourseLayout</string>
+          <string name="Source"><![CDATA[--!strict
+-- Source of truth for the map. Pure data and math, no Instances, so Lune can
+-- test it. World builds whatever this module describes.
+-- Jump numbers match a default Roblox character:
+-- JumpHeight 7.2, WalkSpeed 16, gravity 196.2.
+--
+-- Courses are lists of segments in course-local space:
+--   forward = distance along the course heading, lat = sideways offset,
+--   h = top height above BASE_TOP. `gap` is the edge-to-edge forward gap from
+--   the previous segment. Moving segments carry `move` (axis f / l / y and an
+--   amplitude); Transitions() checks every jump at the worst phase of motion.
+
+local CourseLayout = {}
+
+CourseLayout.JUMP_HEIGHT = 7.2
+CourseLayout.WALK_SPEED = 16
+CourseLayout.GRAVITY = 196.2
+CourseLayout.BASE_TOP = 13
+CourseLayout.GROUND_TOP = 2
+CourseLayout.MAX_GAP = 8
+
+export type Aabb = { x: number, z: number, sx: number, sz: number }
+
+export type Move = { axis: string, amp: number, period: number }
+
+export type Segment = {
+	kind: string, -- start | pad | beam | mover | spinner | vanish | conveyor | ledge | hurdles | checkpoint | finish
+	look: string,
+	gap: number?,
+	lat: number?,
+	h: number,
+	w: number,
+	d: number,
+	move: Move?,
+	spin: number?,
+	push: number?,
+	wall: number?,
+}
+
+export type Palette = {
+	base: { number },
+	alt: { number },
+	accent: { number },
+	kill: { number },
+	checkpoint: { number },
+	finish: { number },
+	trim: { number },
+}
+
+export type CourseSpec = {
+	id: string,
+	displayName: string,
+	tagline: string,
+	payout: number,
+	requiredTier: number,
+	lockHint: string,
+	heading: string,
+	originX: number,
+	originZ: number,
+	thickness: number,
+	minClearance: number,
+	palette: Palette,
+	segments: { Segment },
+}
+
+export type Platform = {
+	index: number,
+	kind: string,
+	look: string,
+	role: string,
+	checkpointNumber: number,
+	forward: number,
+	lat: number,
+	h: number,
+	x: number,
+	z: number,
+	yTop: number,
+	yCenter: number,
+	width: number,
+	depth: number,
+	thickness: number,
+	sx: number,
+	sz: number,
+	move: Move?,
+	spin: number?,
+	push: number?,
+	wall: number?,
+}
+
+local function seg(
+	kind: string,
+	look: string,
+	gap: number,
+	h: number,
+	w: number,
+	d: number,
+	extra: { [string]: any }?
+): Segment
+	local s: any = { kind = kind, look = look, gap = gap, h = h, w = w, d = d }
+	if extra then
+		for key, value in extra do
+			s[key] = value
+		end
+	end
+	return s :: Segment
+end
+
+local COURSES: { CourseSpec } = {
+	{
+		id = "suburbs",
+		displayName = "Suburbs Delivery",
+		tagline = "Haunted night route",
+		payout = 50,
+		requiredTier = 0,
+		lockHint = "",
+		heading = "north",
+		originX = 0,
+		originZ = 70,
+		thickness = 2,
+		minClearance = 2,
+		palette = {
+			base = { 58, 96, 66 },
+			alt = { 120, 84, 60 },
+			accent = { 255, 140, 40 },
+			kill = { 150, 70, 230 },
+			checkpoint = { 255, 150, 40 },
+			finish = { 190, 90, 255 },
+			trim = { 232, 226, 214 },
+		},
+		segments = {
+			seg("start", "lawn", 0, 0, 16, 14),
+			seg("pad", "lawn", 5, 0, 12, 10),
+			seg("pad", "porch", 4, 2, 10, 8),
+			seg("pad", "porch", 4, 4, 10, 8),
+			seg("beam", "fence", 4, 4, 2, 18),
+			seg("pad", "pumpkin", 4, 4, 6, 6, { lat = 4 }),
+			seg("pad", "pumpkin", 4, 5, 6, 6, { lat = -4 }),
+			seg("checkpoint", "lawn", 4, 5, 12, 12),
+			seg("mover", "drone", 5, 5, 8, 8, { move = { axis = "l", amp = 6, period = 5 } }),
+			seg("pad", "porch", 5, 6, 10, 8),
+			seg("vanish", "box", 4, 6, 6, 6, { lat = 3 }),
+			seg("vanish", "box", 4, 6, 6, 6, { lat = -3 }),
+			seg("vanish", "box", 4, 6, 6, 6, { lat = 3 }),
+			seg("conveyor", "sidewalk", 4, 6, 12, 14, { push = 6 }),
+			seg("checkpoint", "lawn", 4, 7, 12, 10),
+			seg("spinner", "sprinkler", 4, 7, 14, 14, { spin = 1.6 }),
+			seg("pad", "roof", 5, 9, 10, 8),
+			seg("hurdles", "roof", 4, 9, 10, 16),
+			seg("finish", "lawn", 4, 10, 14, 14),
+		},
+	},
+	{
+		id = "stage2",
+		displayName = "Graveyard Rugby Rush",
+		tagline = "Tombstone hops and coffin scrums",
+		payout = 150,
+		requiredTier = 1,
+		lockHint = "Needs Porch Tier 1",
+		heading = "east",
+		originX = 59,
+		originZ = 0,
+		thickness = 2,
+		minClearance = 1,
+		palette = {
+			base = { 92, 96, 108 },
+			alt = { 74, 44, 38 },
+			accent = { 90, 255, 150 },
+			kill = { 80, 255, 140 },
+			checkpoint = { 90, 255, 150 },
+			finish = { 255, 210, 80 },
+			trim = { 236, 236, 236 },
+		},
+		segments = {
+			seg("start", "pitch", 0, 0, 12, 12),
+			seg("pad", "tombstone", 5, 2, 4, 3),
+			seg("pad", "tombstone", 5, 3, 4, 3, { lat = 3 }),
+			seg("pad", "tombstone", 5, 4, 4, 3, { lat = -3 }),
+			seg("pad", "coffin", 5, 4, 4, 10),
+			seg("mover", "coffin", 5, 4, 4, 8, { move = { axis = "l", amp = 5, period = 4 } }),
+			seg("pad", "coffin", 5, 5, 4, 8),
+			seg("checkpoint", "pitch", 5, 5, 10, 10),
+			seg("spinner", "tacklebar", 5, 5, 14, 14, { spin = 2.2 }),
+			seg("beam", "crossbar", 5, 6, 2, 20),
+			seg("vanish", "ghost", 5, 6, 5, 5, { lat = 2 }),
+			seg("vanish", "ghost", 5, 7, 5, 5, { lat = -2 }),
+			seg("vanish", "ghost", 5, 8, 5, 5, { lat = 2 }),
+			seg("ledge", "tombwall", 5, 10, 4, 4, { lat = 4, wall = 1 }),
+			seg("ledge", "tombwall", 5, 12, 4, 4, { lat = 4, wall = 1 }),
+			seg("checkpoint", "pitch", 5, 12, 10, 10),
+			seg("conveyor", "scrum", 5, 12, 12, 14, { push = 8 }),
+			seg("hurdles", "pitch", 5, 12, 10, 18),
+			seg("mover", "rugbyball", 6, 12, 8, 8, { move = { axis = "y", amp = 3, period = 4 } }),
+			seg("finish", "pitch", 6, 13, 14, 14),
+		},
+	},
+	{
+		id = "stage3",
+		displayName = "Sore Foot Lava Crypt",
+		tagline = "Blood-moon lava. Mind the bunions.",
+		payout = 400,
+		requiredTier = 2,
+		lockHint = "Needs the Crypt Key (Porch Tier 2)",
+		heading = "south",
+		originX = 0,
+		originZ = -69,
+		thickness = 2,
+		minClearance = 1,
+		palette = {
+			base = { 74, 62, 72 },
+			alt = { 46, 40, 48 },
+			accent = { 255, 50, 70 },
+			kill = { 255, 96, 36 },
+			checkpoint = { 255, 60, 90 },
+			finish = { 255, 200, 70 },
+			trim = { 150, 60, 200 },
+		},
+		segments = {
+			seg("start", "crypt", 0, 0, 12, 12),
+			seg("pad", "crypt", 6, 1, 6, 6),
+			seg("beam", "chain", 6, 1, 2, 16),
+			seg("mover", "coffin", 6, 2, 6, 6, { move = { axis = "l", amp = 6, period = 4 } }),
+			seg("mover", "coffin", 4, 2, 6, 6, { move = { axis = "f", amp = 2, period = 3 } }),
+			seg("pad", "candle", 4, 3, 6, 6),
+			seg("checkpoint", "crypt", 6, 3, 10, 10),
+			seg("spinner", "candelabra", 6, 3, 14, 14, { spin = 2.8 }),
+			seg("vanish", "cracked", 6, 4, 5, 5),
+			seg("vanish", "cracked", 6, 4, 5, 5, { lat = 3 }),
+			seg("vanish", "cracked", 6, 5, 5, 5, { lat = -3 }),
+			seg("ledge", "brick", 6, 7, 4, 4, { lat = -4, wall = -1 }),
+			seg("ledge", "brick", 6, 9, 4, 4, { lat = -4, wall = -1 }),
+			seg("beam", "chain", 6, 9, 2, 20),
+			seg("checkpoint", "crypt", 6, 9, 10, 10),
+			seg("conveyor", "lavabelt", 6, 9, 12, 14, { push = 10 }),
+			seg("hurdles", "crypt", 6, 9, 10, 18),
+			seg("spinner", "candelabra", 6, 10, 14, 14, { spin = 3.2 }),
+			seg("mover", "sarcophagus", 6, 11, 8, 8, { move = { axis = "y", amp = 3, period = 4 } }),
+			seg("pad", "candle", 7, 11, 6, 6),
+			seg("finish", "crypt", 6, 12, 14, 14),
+		},
+	},
+}
+
+local HEADINGS: { [string]: { fx: number, fz: number, rx: number, rz: number } } = {
+	north = { fx = 0, fz = 1, rx = 1, rz = 0 },
+	east = { fx = 1, fz = 0, rx = 0, rz = -1 },
+	south = { fx = 0, fz = -1, rx = -1, rz = 0 },
+	west = { fx = -1, fz = 0, rx = 0, rz = 1 },
+}
+
+function CourseLayout.All(): { CourseSpec }
+	return COURSES
+end
+
+function CourseLayout.Get(id: string): CourseSpec
+	for _, spec in COURSES do
+		if spec.id == id then
+			return spec
+		end
+	end
+	error("unknown course " .. id, 2)
+end
+
+function CourseLayout.Heading(spec: CourseSpec): { fx: number, fz: number, rx: number, rz: number }
+	local heading = HEADINGS[spec.heading]
+	if not heading then
+		error(spec.id .. " has an unknown heading " .. tostring(spec.heading), 2)
+	end
+	return heading
+end
+
+-- Local (forward, lat) to world (x, z).
+function CourseLayout.ToWorld(spec: CourseSpec, forward: number, lat: number): (number, number)
+	local hd = CourseLayout.Heading(spec)
+	return spec.originX + hd.fx * forward + hd.rx * lat, spec.originZ + hd.fz * forward + hd.rz * lat
+end
+
+-- Local (depth along forward, width along lat) to world (sx, sz).
+function CourseLayout.WorldSize(spec: CourseSpec, depth: number, width: number): (number, number)
+	local hd = CourseLayout.Heading(spec)
+	return math.abs(hd.fx) * depth + math.abs(hd.rx) * width, math.abs(hd.fz) * depth + math.abs(hd.rz) * width
+end
+
+function CourseLayout.Lobby(): Aabb & { y: number, sy: number, top: number }
+	local sy = 2
+	return {
+		x = 0,
+		z = 0,
+		sx = 90,
+		sz = 110,
+		sy = sy,
+		y = CourseLayout.BASE_TOP - sy / 2,
+		top = CourseLayout.BASE_TOP,
+	}
+end
+
+function CourseLayout.SpawnPoint(): (number, number)
+	return 0, -6
+end
+
+function CourseLayout.Platforms(spec: CourseSpec): { Platform }
+	local segments = spec.segments
+	local count = #segments
+	if count < 3 then
+		error(spec.id .. " needs a start, something to jump, and a finish", 2)
+	end
+	if segments[1].kind ~= "start" then
+		error(spec.id .. " must begin with a start segment", 2)
+	end
+	if segments[count].kind ~= "finish" then
+		error(spec.id .. " must end with a finish segment", 2)
+	end
+
+	local platforms: { Platform } = {}
+	local forward = 0
+	local checkpoints = 0
+	for index, s in segments do
+		if index > 1 then
+			local previous = segments[index - 1]
+			forward += previous.d / 2 + (s.gap or 0) + s.d / 2
+		end
+		local role = "jump"
+		local number = 0
+		if s.kind == "start" then
+			role = "start"
+		elseif s.kind == "finish" then
+			role = "finish"
+		elseif s.kind == "checkpoint" then
+			role = "checkpoint"
+			checkpoints += 1
+			number = checkpoints
+		end
+		local lat = s.lat or 0
+		local x, z = CourseLayout.ToWorld(spec, forward, lat)
+		local sx, sz = CourseLayout.WorldSize(spec, s.d, s.w)
+		local yTop = CourseLayout.BASE_TOP + s.h
+		platforms[index] = {
+			index = index,
+			kind = s.kind,
+			look = s.look,
+			role = role,
+			checkpointNumber = number,
+			forward = forward,
+			lat = lat,
+			h = s.h,
+			x = x,
+			z = z,
+			yTop = yTop,
+			yCenter = yTop - spec.thickness / 2,
+			width = s.w,
+			depth = s.d,
+			thickness = spec.thickness,
+			sx = sx,
+			sz = sz,
+			move = s.move,
+			spin = s.spin,
+			push = s.push,
+			wall = s.wall,
+		}
+	end
+	return platforms
+end
+
+function CourseLayout.Checkpoints(spec: CourseSpec): { Platform }
+	local found = {}
+	for _, platform in CourseLayout.Platforms(spec) do
+		if platform.role == "checkpoint" then
+			table.insert(found, platform)
+		end
+	end
+	return found
+end
+
+function CourseLayout.ObstacleCount(spec: CourseSpec): number
+	local count = 0
+	for _, s in spec.segments do
+		if s.kind ~= "start" and s.kind ~= "finish" and s.kind ~= "checkpoint" then
+			count += 1
+		end
+	end
+	return count
+end
+
+function CourseLayout.JumpArcHeight(horizontalGap: number): number
+	local gravity = CourseLayout.GRAVITY
+	local verticalSpeed = math.sqrt(2 * gravity * CourseLayout.JUMP_HEIGHT)
+	local timeToGap = horizontalGap / CourseLayout.WALK_SPEED
+	return verticalSpeed * timeToGap - 0.5 * gravity * timeToGap * timeToGap
+end
+
+local function amp(platform: Platform, axis: string): number
+	local move = platform.move
+	if move and move.axis == axis then
+		return move.amp
+	end
+	return 0
+end
+
+export type Transition = {
+	fromIndex: number,
+	toIndex: number,
+	nominalGap: number,
+	gap: number,
+	step: number,
+	clearance: number,
+	closestGap: number,
+}
+
+-- Worst case over the motion of either end: the longest edge-to-edge reach
+-- and the highest climb a player could be forced into.
+function CourseLayout.Transitions(spec: CourseSpec): { Transition }
+	local platforms = CourseLayout.Platforms(spec)
+	local transitions: { Transition } = {}
+	for index = 1, #platforms - 1 do
+		local a = platforms[index]
+		local b = platforms[index + 1]
+		local nominal = (b.forward - b.depth / 2) - (a.forward + a.depth / 2)
+		local gapF = nominal + amp(a, "f") + amp(b, "f")
+		local latSep = math.max(
+			0,
+			math.abs(b.lat - a.lat) + amp(a, "l") + amp(b, "l") - (a.width + b.width) / 2
+		)
+		local gap = math.sqrt(gapF * gapF + latSep * latSep)
+		local step = (b.h + amp(b, "y")) - (a.h - amp(a, "y"))
+		transitions[index] = {
+			fromIndex = index,
+			toIndex = index + 1,
+			nominalGap = nominal,
+			gap = gap,
+			step = step,
+			clearance = CourseLayout.JumpArcHeight(gap) - step,
+			closestGap = nominal - amp(a, "f") - amp(b, "f"),
+		}
+	end
+	return transitions
+end
+
+-- World-space footprint including how far a mover can travel.
+function CourseLayout.Footprint(spec: CourseSpec, platform: Platform): Aabb
+	local depth = platform.depth + 2 * amp(platform, "f")
+	local width = platform.width + 2 * amp(platform, "l")
+	local sx, sz = CourseLayout.WorldSize(spec, depth, width)
+	return { x = platform.x, z = platform.z, sx = sx, sz = sz }
+end
+
+function CourseLayout.CourseBounds(spec: CourseSpec, pad: number): Aabb
+	local minX, maxX = math.huge, -math.huge
+	local minZ, maxZ = math.huge, -math.huge
+	for _, platform in CourseLayout.Platforms(spec) do
+		local box = CourseLayout.Footprint(spec, platform)
+		minX = math.min(minX, box.x - box.sx / 2)
+		maxX = math.max(maxX, box.x + box.sx / 2)
+		minZ = math.min(minZ, box.z - box.sz / 2)
+		maxZ = math.max(maxZ, box.z + box.sz / 2)
+	end
+	return {
+		x = (minX + maxX) / 2,
+		z = (minZ + maxZ) / 2,
+		sx = (maxX - minX) + pad * 2,
+		sz = (maxZ - minZ) + pad * 2,
+	}
+end
+
+function CourseLayout.Overlap(a: Aabb, b: Aabb): (number, number)
+	local overlapX = math.min(a.x + a.sx / 2, b.x + b.sx / 2)
+		- math.max(a.x - a.sx / 2, b.x - b.sx / 2)
+	local overlapZ = math.min(a.z + a.sz / 2, b.z + b.sz / 2)
+		- math.max(a.z - a.sz / 2, b.z - b.sz / 2)
+	return overlapX, overlapZ
+end
+
+-- The walkway from the lobby edge to a course's start platform.
+function CourseLayout.Approach(spec: CourseSpec): Aabb & { y: number, sy: number, length: number }
+	local lobby = CourseLayout.Lobby()
+	local first = CourseLayout.Platforms(spec)[1]
+	local hd = CourseLayout.Heading(spec)
+	local overlap = 3
+	-- Distance from lobby center to the lobby edge along the heading.
+	local edge = math.abs(hd.fx) * lobby.sx / 2 + math.abs(hd.fz) * lobby.sz / 2
+	local lobbyCenterForward = (lobby.x - spec.originX) * hd.fx + (lobby.z - spec.originZ) * hd.fz
+	local fromForward = lobbyCenterForward + edge - overlap
+	local toForward = first.forward - first.depth / 2 + 2
+	local length = toForward - fromForward
+	local mid = (fromForward + toForward) / 2
+	local x, z = CourseLayout.ToWorld(spec, mid, first.lat)
+	local width = math.max(10, first.width - 2)
+	local sx, sz = CourseLayout.WorldSize(spec, length, width)
+	return {
+		x = x,
+		z = z,
+		sx = sx,
+		sz = sz,
+		sy = 2,
+		y = CourseLayout.BASE_TOP - 1,
+		length = length,
+	}
+end
+
+-- Kept for callers of the old API.
+function CourseLayout.EastBridge(): Aabb & { y: number, sy: number }
+	return CourseLayout.Approach(CourseLayout.Get("stage2"))
+end
+
+-- One sign per course, on an arch over the approach, facing the spawn.
+function CourseLayout.EntranceSign(
+	spec: CourseSpec
+): { x: number, y: number, z: number, width: number, height: number, faceX: number, faceZ: number }
+	local lobby = CourseLayout.Lobby()
+	local hd = CourseLayout.Heading(spec)
+	local edge = math.abs(hd.fx) * lobby.sx / 2 + math.abs(hd.fz) * lobby.sz / 2
+	local first = CourseLayout.Platforms(spec)[1]
+	local latWorldX = hd.rx * first.lat
+	local latWorldZ = hd.rz * first.lat
+	return {
+		x = lobby.x + hd.fx * (edge - 2) + latWorldX,
+		y = CourseLayout.BASE_TOP + 13,
+		z = lobby.z + hd.fz * (edge - 2) + latWorldZ,
+		width = 16,
+		height = 5,
+		faceX = -hd.fx,
+		faceZ = -hd.fz,
+	}
+end
+
+function CourseLayout.EncodeCheckpoint(courseId: string, number: number): string
+	if number <= 1 then
+		return courseId
+	end
+	return courseId .. "#" .. tostring(math.floor(number))
+end
+
+function CourseLayout.DecodeCheckpoint(value: any): (string?, number)
+	if type(value) ~= "string" or value == "" then
+		return nil, 0
+	end
+	local id, number = string.match(value, "^([%w_]+)#(%d+)$")
+	if id and number then
+		return id, math.max(1, tonumber(number) or 1)
+	end
+	if string.match(value, "^[%w_]+$") then
+		return value, 1
+	end
+	return nil, 0
+end
+
+local PAD_X = -70
+local PAD_OFFSETS = { -12, 0, 12 }
+local PAD_SIZE = 8
+local SLOT_SPACING = 40
+local MAX_SLOTS = 6
+
+function CourseLayout.MaxPorchSlots(): number
+	return MAX_SLOTS
+end
+
+function CourseLayout.PadPlacements(
+	slotIndex: number
+): { { x: number, z: number, size: number, top: number } }
+	local slotZ = (slotIndex - 1) * SLOT_SPACING
+	local placements = {}
+	for index, offset in PAD_OFFSETS do
+		placements[index] = {
+			x = PAD_X,
+			z = slotZ + offset,
+			size = PAD_SIZE,
+			top = CourseLayout.BASE_TOP,
+		}
+	end
+	return placements
+end
+
+-- The tier-2 Crypt Key pad, beside the three porch pads.
+function CourseLayout.UpgradePlacement(slotIndex: number): { x: number, z: number, size: number, top: number }
+	local slotZ = (slotIndex - 1) * SLOT_SPACING
+	return { x = -61, z = slotZ + 18, size = 6, top = CourseLayout.BASE_TOP }
+end
+
+function CourseLayout.ModelPoint(
+	placement: { x: number, z: number, top: number }
+): (number, number, number)
+	return placement.x - 16, placement.top, placement.z
+end
+
+function CourseLayout.PorchDeck(): Aabb & { y: number, sy: number, top: number }
+	local padHalf = PAD_SIZE / 2
+	local zMin = 0 - 12 - padHalf - 8
+	local zMax = (MAX_SLOTS - 1) * SLOT_SPACING + 12 + padHalf + 8
+	local xMin = -98
+	local xMax = -56
+	local sy = 2
+	return {
+		x = (xMin + xMax) / 2,
+		z = (zMin + zMax) / 2,
+		sx = xMax - xMin,
+		sz = zMax - zMin,
+		sy = sy,
+		y = CourseLayout.BASE_TOP - sy / 2,
+		top = CourseLayout.BASE_TOP,
+	}
+end
+
+function CourseLayout.PorchWalkway(): Aabb & { y: number, sy: number }
+	local lobby = CourseLayout.Lobby()
+	local deck = CourseLayout.PorchDeck()
+	local overlap = 3
+	local xMin = (deck.x + deck.sx / 2) - overlap
+	local xMax = (lobby.x - lobby.sx / 2) + overlap
+	return {
+		x = (xMin + xMax) / 2,
+		z = 0,
+		sx = xMax - xMin,
+		sz = 16,
+		sy = 2,
+		y = CourseLayout.BASE_TOP - 1,
+	}
+end
+
+function CourseLayout.Contains(bounds: Aabb, x: number, z: number, half: number): boolean
+	if x - half < bounds.x - bounds.sx / 2 then
+		return false
+	end
+	if x + half > bounds.x + bounds.sx / 2 then
+		return false
+	end
+	if z - half < bounds.z - bounds.sz / 2 then
+		return false
+	end
+	if z + half > bounds.z + bounds.sz / 2 then
+		return false
+	end
+	return true
+end
+
+return CourseLayout
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">Economy</string>
+          <string name="Source"><![CDATA[--!strict
+-- Server-authoritative cash. The module is shared so the API is one place;
+-- each VM has its own table. Mutations throw on the client.
+-- Changed:Fire(player, cash, delta, reason)
+
+local Signal
+if script ~= nil then
+	Signal = require(script.Parent.Signal)
+else
+	Signal = require("./Signal")
+end
+
+local Economy = {}
+Economy.Changed = Signal.new()
+
+Economy.Reasons = {
+	StageClear = "stage_clear",
+	Checkpoint = "checkpoint",
+	TimerBonus = "timer_bonus",
+	DailyShift = "daily_shift",
+	DevProduct = "dev_product",
+	OfflineTycoon = "offline_tycoon",
+	BasePad = "base_pad",
+	Hydrate = "hydrate",
+	Admin = "admin",
+}
+
+local MULTIPLIED: { [string]: boolean } = {
+	stage_clear = true,
+	checkpoint = true,
+	timer_bonus = true,
+	daily_shift = true,
+	offline_tycoon = true,
+}
+
+local cashByUser: { [number]: number } = {}
+local multiplierByUser: { [number]: number } = {}
+local authorityOverride: boolean? = nil
+
+local function userIdOf(player: any): number
+	local userId = player and player.UserId
+	if type(userId) ~= "number" then
+		error("expected a player with a numeric UserId", 3)
+	end
+	return userId
+end
+
+local function isAuthoritative(): boolean
+	if authorityOverride ~= nil then
+		return authorityOverride
+	end
+	local ok, server = pcall(function()
+		return game:GetService("RunService"):IsServer()
+	end)
+	if not ok then
+		return true
+	end
+	return server == true
+end
+
+local function assertServer()
+	if not isAuthoritative() then
+		error("Economy mutations are server-authoritative", 2)
+	end
+end
+
+local function assertReason(reason: any)
+	if type(reason) ~= "string" or reason == "" then
+		error("cash reason must be a non-empty string", 3)
+	end
+end
+
+local function assertPositiveInt(amount: any, name: string)
+	if
+		type(amount) ~= "number"
+		or amount ~= amount
+		or amount == math.huge
+		or amount <= 0
+		or amount ~= math.floor(amount)
+	then
+		error(name .. " expects a positive integer", 3)
+	end
+end
+
+local function assertNonNegativeInt(amount: any, name: string)
+	if
+		type(amount) ~= "number"
+		or amount ~= amount
+		or amount == math.huge
+		or amount < 0
+		or amount ~= math.floor(amount)
+	then
+		error(name .. " expects a non-negative integer", 3)
+	end
+end
+
+function Economy.GetCash(player: any): number
+	return cashByUser[userIdOf(player)] or 0
+end
+
+function Economy.GetEarnMultiplier(player: any): number
+	return multiplierByUser[userIdOf(player)] or 1
+end
+
+function Economy.SetEarnMultiplier(player: any, multiplier: number)
+	assertServer()
+	if
+		type(multiplier) ~= "number"
+		or multiplier ~= multiplier
+		or multiplier < 1
+		or multiplier == math.huge
+	then
+		error("earn multiplier must be a finite number >= 1", 2)
+	end
+	multiplierByUser[userIdOf(player)] = multiplier
+end
+
+function Economy.AddCash(player: any, amount: number, reason: string)
+	assertServer()
+	assertPositiveInt(amount, "AddCash")
+	assertReason(reason)
+	local userId = userIdOf(player)
+	local multiplier = 1
+	if MULTIPLIED[reason] then
+		multiplier = multiplierByUser[userId] or 1
+	end
+	local applied = math.floor(amount * multiplier + 1e-6)
+	local nextCash = (cashByUser[userId] or 0) + applied
+	cashByUser[userId] = nextCash
+	Economy.Changed:Fire(player, nextCash, applied, reason)
+end
+
+function Economy.TrySpend(player: any, amount: number, reason: string): boolean
+	assertServer()
+	assertPositiveInt(amount, "TrySpend")
+	assertReason(reason)
+	local userId = userIdOf(player)
+	local current = cashByUser[userId] or 0
+	if current < amount then
+		return false
+	end
+	local nextCash = current - amount
+	cashByUser[userId] = nextCash
+	Economy.Changed:Fire(player, nextCash, -amount, reason)
+	return true
+end
+
+function Economy.Hydrate(player: any, amount: number)
+	assertServer()
+	assertNonNegativeInt(amount, "Hydrate")
+	local userId = userIdOf(player)
+	local previous = cashByUser[userId] or 0
+	cashByUser[userId] = amount
+	if amount == previous then
+		return
+	end
+	Economy.Changed:Fire(player, amount, amount - previous, Economy.Reasons.Hydrate)
+end
+
+function Economy.Forget(player: any)
+	local userId = userIdOf(player)
+	cashByUser[userId] = nil
+	multiplierByUser[userId] = nil
+end
+
+function Economy._setAuthority(value: boolean?)
+	authorityOverride = value
+end
+
+function Economy._reset()
+	table.clear(cashByUser)
+	table.clear(multiplierByUser)
+	authorityOverride = nil
+end
+
+return Economy
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="7">
+        <Properties>
+          <string name="Name">JsonCopy</string>
+          <string name="Source"><![CDATA[--!strict
+-- Deep copy of JSON-ish values. Drops functions, threads, and userdata.
+-- Cycles are skipped so a bad blob cannot loop forever.
+
+local function copy(value: any, seen: { [any]: boolean }): any
+	local kind = type(value)
+	if kind == "number" or kind == "string" or kind == "boolean" then
+		return value
+	end
+	if kind ~= "table" then
+		return nil
+	end
+	if seen[value] then
+		return nil
+	end
+	seen[value] = true
+	local out = {}
+	for key, child in value do
+		if type(key) == "string" or type(key) == "number" then
+			local cloned = copy(child, seen)
+			if cloned ~= nil then
+				out[key] = cloned
+			end
+		end
+	end
+	return out
+end
+
+local function JsonCopy(value: any): any
+	return copy(value, {})
+end
+
+return JsonCopy
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="8">
+        <Properties>
+          <string name="Name">PorchPads</string>
+          <string name="Source"><![CDATA[--!strict
+-- Placeholder porch purchases. The base team replaces the pads;
+-- the prices here are the playable slice, not the later tycoon curve.
+
+local PorchPads = {}
+
+export type PadDef = {
+	id: string,
+	name: string,
+	cost: number,
+	kind: string,
+	blurb: string,
+}
+
+export type OwnedMap = { [string]: boolean }
+
+export type Preview = {
+	ok: boolean,
+	reason: string,
+	cost: number?,
+	owned: OwnedMap?,
+	tier: number?,
+}
+
+local DEFS: { PadDef } = {
+	{
+		id = "bench",
+		name = "Porch Bench",
+		cost = 50,
+		kind = "bench",
+		blurb = "Sit down. The Count's feet filed a complaint.",
+	},
+	{
+		id = "icebath",
+		name = "Ice Bath",
+		cost = 100,
+		kind = "icebath",
+		blurb = "For sore rugby feet. Water not included, the look is.",
+	},
+	{
+		id = "shrine",
+		name = "DoorDash Bag Shrine",
+		cost = 150,
+		kind = "shrine",
+		blurb = "A red delivery bag on a pedestal. Reverence, then tips.",
+	},
+}
+
+local BY_ID: { [string]: PadDef } = {}
+for _, def in DEFS do
+	BY_ID[def.id] = def
+end
+
+PorchPads.Defs = DEFS
+
+-- Tier 2: one more porch buy after the first three. Opens Sore Foot Lava Crypt.
+-- Its cost is BaseConfig tier 2's price (a test keeps them equal).
+PorchPads.Upgrade = {
+	id = "cryptkey",
+	name = "Crypt Key",
+	cost = 1500,
+	kind = "cryptkey",
+	blurb = "A big goofy skeleton key. Opens the lava crypt behind the manor.",
+	tier = 2,
+	requiresTier = 1,
+}
+
+function PorchPads.PreviewUpgrade(owned: OwnedMap, tier: number, cash: number): Preview
+	local def = PorchPads.Upgrade
+	if owned[def.id] == true or tier >= def.tier then
+		return { ok = false, reason = "already", cost = def.cost }
+	end
+	if tier < def.requiresTier or not PorchPads.OwnsAll(owned) then
+		return { ok = false, reason = "tier", cost = def.cost }
+	end
+	if type(cash) ~= "number" or cash < def.cost then
+		return { ok = false, reason = "poor", cost = def.cost }
+	end
+	local nextOwned: OwnedMap = table.clone(owned)
+	nextOwned[def.id] = true
+	return { ok = true, reason = "ok", cost = def.cost, owned = nextOwned, tier = def.tier }
+end
+
+function PorchPads.Get(id: string): PadDef?
+	return BY_ID[id]
+end
+
+function PorchPads.OwnsAll(owned: OwnedMap): boolean
+	for _, def in DEFS do
+		if owned[def.id] ~= true then
+			return false
+		end
+	end
+	return true
+end
+
+function PorchPads.Preview(owned: OwnedMap, padId: string, cash: number): Preview
+	local def = BY_ID[padId]
+	if not def then
+		return { ok = false, reason = "unknown" }
+	end
+	if owned[padId] == true then
+		return { ok = false, reason = "already", cost = def.cost }
+	end
+	if type(cash) ~= "number" or cash < def.cost then
+		return { ok = false, reason = "poor", cost = def.cost }
+	end
+	local nextOwned: OwnedMap = table.clone(owned)
+	nextOwned[padId] = true
+	local tier = if PorchPads.OwnsAll(nextOwned) then 1 else 0
+	return {
+		ok = true,
+		reason = "ok",
+		cost = def.cost,
+		owned = nextOwned,
+		tier = tier,
+	}
+end
+
+return PorchPads
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="Folder" referent="9">
+        <Properties>
+          <string name="Name">Retention</string>
+        </Properties>
+        <Item class="ModuleScript" referent="10">
+          <Properties>
+            <string name="Name">OfflineIncome</string>
+            <string name="Source"><![CDATA[--!strict
+-- Cap hook for the base team's offline tycoon math.
+-- Call Retention.GrantOfflineIncome once per join; this function is the pure cap.
+-- Tier < 1 uses the tier-1 rate. Tier > 3 uses the tier-3 rate.
+-- Nothing accrues past MaxHours.
+
+local OfflineIncome = {}
+
+OfflineIncome.PerHour = { 400, 1200, 4000 }
+OfflineIncome.MaxHours = 8
+
+function OfflineIncome.Cap(raw: any, elapsedSeconds: any, tier: any): number
+	if type(raw) ~= "number" or raw ~= raw or raw <= 0 or raw == math.huge then
+		return 0
+	end
+	if
+		type(elapsedSeconds) ~= "number"
+		or elapsedSeconds ~= elapsedSeconds
+		or elapsedSeconds <= 0
+	then
+		return 0
+	end
+	local tierIndex = if type(tier) == "number" then math.floor(tier) else 1
+	if tierIndex < 1 then
+		tierIndex = 1
+	end
+	if tierIndex > #OfflineIncome.PerHour then
+		tierIndex = #OfflineIncome.PerHour
+	end
+	local hours = math.min(elapsedSeconds / 3600, OfflineIncome.MaxHours)
+	local cap = math.floor(OfflineIncome.PerHour[tierIndex] * hours + 1e-6)
+	return math.min(math.floor(raw), cap)
+end
+
+return OfflineIncome
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="11">
+          <Properties>
+            <string name="Name">Streak</string>
+            <string name="Source"><![CDATA[--!strict
+-- DoorDash shift. UTC day numbers (floor(os.time() / 86400)).
+-- Missing a day resets to 1. After day 7 the next day starts a new week.
+-- The sock is once per account, not a tradable Roblox Limited.
+
+local Streak = {}
+
+Streak.Rewards = { 200, 400, 600, 800, 1000, 1400, 2200 }
+
+export type State = {
+	lastClaimDay: number,
+	streak: number,
+	bestStreak: number,
+	sockGranted: boolean,
+}
+
+export type Reward = {
+	day: number,
+	cash: number,
+	sock: boolean,
+}
+
+function Streak.Fresh(): State
+	return { lastClaimDay = 0, streak = 0, bestStreak = 0, sockGranted = false }
+end
+
+local function nextDay(state: State, today: number): number?
+	if state.lastClaimDay == 0 then
+		return 1
+	end
+	local gap = today - state.lastClaimDay
+	if gap <= 0 then
+		return nil
+	end
+	if gap == 1 then
+		if state.streak >= 7 then
+			return 1
+		end
+		return state.streak + 1
+	end
+	return 1
+end
+
+function Streak.Claim(state: State, today: number): (boolean, State, Reward?, string?)
+	if type(today) ~= "number" then
+		return false, state, nil, "bad_day"
+	end
+	local day = nextDay(state, today)
+	if not day then
+		return false, state, nil, "already_claimed"
+	end
+	local grantSock = day == 7 and state.sockGranted ~= true
+	local newState: State = {
+		lastClaimDay = today,
+		streak = day,
+		bestStreak = math.max(state.bestStreak or 0, day),
+		sockGranted = state.sockGranted == true or grantSock,
+	}
+	local reward: Reward = {
+		day = day,
+		cash = Streak.Rewards[day],
+		sock = grantSock,
+	}
+	return true, newState, reward, nil
+end
+
+return Streak
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+      <Item class="Folder" referent="12">
+        <Properties>
+          <string name="Name">Shop</string>
+        </Properties>
+        <Item class="ModuleScript" referent="13">
+          <Properties>
+            <string name="Name">Catalog</string>
+            <string name="Source"><![CDATA[--!strict
+-- Placeholder Creator Dashboard ids are 0.
+-- A live receipt with product id 0 is ignored. Replace the zeros before shipping.
+-- Prices are the draft in docs/PRICING.md. 2× tips does not multiply these bundles.
+
+local Catalog = {}
+
+export type PassDef = {
+	key: string,
+	id: number,
+	name: string,
+	price: number,
+	blurb: string,
+}
+
+export type ProductDef = {
+	key: string,
+	id: number,
+	name: string,
+	price: number,
+	kind: string,
+	cash: number?,
+	blurb: string,
+}
+
+local PASSES: { PassDef } = {
+	{
+		key = "doubleCash",
+		id = 0,
+		name = "2× DoorDash Tips",
+		price = 249,
+		blurb = "Doubles earned cash: routes, checkpoints, the daily shift, offline income. Not Robux bundles.",
+	},
+	{
+		key = "speedCoil",
+		id = 0,
+		name = "Rugby Cleats",
+		price = 99,
+		blurb = "WalkSpeed 16 to 22. The Count's feet stay sore. He is just faster about it.",
+	},
+	{
+		key = "vip",
+		id = 0,
+		name = "Ice-Bath VIP",
+		price = 199,
+		blurb = 'The lounge is the base team\'s room. Check Shop.OwnsPass(player, "vip").',
+	},
+	{
+		key = "foamBlaster",
+		id = 0,
+		name = "Foam Fangs",
+		price = 149,
+		blurb = "A toy foam dart launcher shaped like fangs. It does not damage players.",
+	},
+}
+
+local PRODUCTS: { ProductDef } = {
+	{
+		key = "stageSkip",
+		id = 0,
+		name = "Skip this porch",
+		price = 35,
+		kind = "skip",
+		blurb = "Pays the route you're on, without the timer. No route? 50 cash instead.",
+	},
+	{
+		key = "revive",
+		id = 0,
+		name = "Ice the ankles",
+		price = 25,
+		kind = "revive",
+		blurb = "Back to your checkpoint. The run stays armed.",
+	},
+	{
+		key = "cashSmall",
+		id = 0,
+		name = "Snack run",
+		price = 79,
+		kind = "cash",
+		cash = 3500,
+		blurb = "A fixed tip pile. The 2× pass does not multiply it.",
+	},
+	{
+		key = "cashMedium",
+		id = 0,
+		name = "Dinner rush",
+		price = 349,
+		kind = "cash",
+		cash = 18000,
+		blurb = "A bigger fixed pile. Still not multiplied by 2×.",
+	},
+	{
+		key = "cashLarge",
+		id = 0,
+		name = "Catering contract",
+		price = 799,
+		kind = "cash",
+		cash = 70000,
+		blurb = "The whale pile. Face value only.",
+	},
+}
+
+Catalog.Passes = PASSES
+Catalog.Products = PRODUCTS
+
+function Catalog.PassByKey(key: string): PassDef?
+	for _, pass in PASSES do
+		if pass.key == key then
+			return pass
+		end
+	end
+	return nil
+end
+
+function Catalog.ProductById(productId: number): ProductDef?
+	if productId == 0 then
+		return nil
+	end
+	for _, product in PRODUCTS do
+		if product.id == productId then
+			return product
+		end
+	end
+	return nil
+end
+
+return Catalog
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="14">
+          <Properties>
+            <string name="Name">Receipts</string>
+            <string name="Source"><![CDATA[--!strict
+-- Idempotent dev-product handler.
+-- Grant at most once per PurchaseId. Return PurchaseGranted only after save()
+-- succeeds. A failed save leaves the grant in memory and returns NotProcessedYet
+-- so the next call saves it without granting again.
+
+local Receipts = {}
+
+export type Receipt = {
+	PurchaseId: string,
+	ProductId: number,
+}
+
+export type Callbacks = {
+	grant: () -> boolean,
+	save: () -> boolean,
+	now: () -> number,
+}
+
+function Receipts.Process(
+	receipts: { [string]: any },
+	receipt: Receipt,
+	callbacks: Callbacks
+): string
+	if
+		type(receipt) ~= "table"
+		or type(receipt.PurchaseId) ~= "string"
+		or receipt.PurchaseId == ""
+	then
+		return "NotProcessedYet"
+	end
+	if type(receipt.ProductId) ~= "number" then
+		return "NotProcessedYet"
+	end
+
+	if receipts[receipt.PurchaseId] ~= nil then
+		if callbacks.save() == true then
+			return "PurchaseGranted"
+		end
+		return "NotProcessedYet"
+	end
+
+	local granted = false
+	local ok, result = pcall(callbacks.grant)
+	if ok and result == true then
+		granted = true
+	end
+	if not granted then
+		return "NotProcessedYet"
+	end
+
+	receipts[receipt.PurchaseId] = {
+		productId = receipt.ProductId,
+		at = callbacks.now(),
+	}
+	if callbacks.save() == true then
+		return "PurchaseGranted"
+	end
+	return "NotProcessedYet"
+end
+
+return Receipts
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+      <Item class="ModuleScript" referent="15">
+        <Properties>
+          <string name="Name">Signal</string>
+          <string name="Source"><![CDATA[--!strict
+-- Tiny signal. Works in Roblox and in Lune tests (no BindableEvent).
+-- Listeners run synchronously and are isolated with pcall.
+
+local Signal = {}
+Signal.__index = Signal
+
+export type Connection = {
+	Disconnect: (self: Connection) -> (),
+	Connected: boolean,
+}
+
+function Signal.new()
+	return setmetatable({
+		_listeners = {} :: { { callback: (...any) -> (), connection: Connection } },
+	}, Signal)
+end
+
+function Signal:Connect(callback: (...any) -> ()): Connection
+	local connection: Connection = { Connected = true } :: any
+	function connection.Disconnect(conn: Connection)
+		conn.Connected = false
+	end
+	table.insert(self._listeners, { callback = callback, connection = connection })
+	return connection
+end
+
+function Signal:Fire(...)
+	local index = 1
+	while index <= #self._listeners do
+		local entry = self._listeners[index]
+		if entry.connection.Connected then
+			local ok, err = pcall(entry.callback, ...)
+			if not ok then
+				warn("[Signal] " .. tostring(err))
+			end
+			index += 1
+		else
+			table.remove(self._listeners, index)
+		end
+	end
+end
+
+return Signal
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="16">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Script" referent="17">
+      <Properties>
+        <string name="Name">Server</string>
+        <token name="RunContext">0</token>
+        <string name="Source"><![CDATA[--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Economy = require(ReplicatedStorage.Shared.Economy)
+local Movement = require(script.Movement)
+local Notify = require(script.Notify)
+local Leaderstats = require(script.Leaderstats)
+local BaseService = require(script.Base)
+local World = require(script.World)
+local Stages = require(script.Stages)
+local Pads = require(script.Pads)
+local Saves = require(script.Saves)
+local Shop = require(script.Shop)
+local Retention = require(script.Retention)
+local Gear = require(script.Gear)
+local PlayerLock = require(script.PlayerLock)
+local StudioTools = require(script.StudioTools)
+local Sky = require(script.World.Sky)
+
+pcall(function()
+	Players.RespawnTime = 2.5
+end)
+Movement.ApplyWorld()
+
+-- Moonlit night. Every Lighting write inside is pcall-wrapped.
+Sky.Apply()
+
+Notify.Start()
+Leaderstats.Bind(Economy)
+
+local world = World.Build()
+World.HookKills(world.folder)
+
+Saves.Configure({
+	collect = function(player)
+		return {
+			cash = Economy.GetCash(player),
+			stages = Stages.Export(player),
+			streak = Retention.Export(player),
+			purchases = Shop.Export(player),
+			offline = Retention.ExportOffline(player),
+			base = BaseService.ExportState(player),
+		}
+	end,
+	apply = function(player, data)
+		Economy.Hydrate(player, if type(data.cash) == "number" then data.cash else 0)
+		Stages.Load(player, data.stages)
+		Retention.Load(player, data.streak, data.offline)
+		Shop.Load(player, data.purchases)
+		BaseService.ImportState(player, data.base)
+		Pads.Load(player, BaseService.GetPads(player))
+	end,
+})
+Saves.Start()
+
+Stages.Start({
+	courses = world.courses,
+	economy = Economy,
+	base = BaseService,
+	notify = Notify,
+	spawnCFrame = world.spawnCFrame,
+	ready = function(player)
+		return Saves.IsLoaded(player)
+	end,
+})
+
+World.HookRescue(world.folder, Stages.Rescue)
+
+Pads.Start({
+	economy = Economy,
+	base = BaseService,
+	notify = Notify,
+	folder = world.folder,
+})
+
+Shop.Start({
+	notify = Notify,
+	hasSock = Retention.HasSock,
+})
+
+Retention.Start({
+	folder = world.folder,
+	notify = Notify,
+	base = BaseService,
+	onDress = function(player)
+		Shop.RefreshCharacter(player)
+	end,
+})
+
+StudioTools.Start(Economy, Notify, Shop)
+
+local function dress(player: Player, character: Model)
+	Movement.ApplyCharacter(player, character)
+	Gear.Apply(player, character, {
+		foam = Shop.OwnsPass(player, "foamBlaster"),
+		sock = Retention.HasSock(player),
+	})
+end
+
+local function onPlayer(player: Player)
+	Leaderstats.Attach(player, 0)
+	player.RespawnLocation = world.spawn
+	Pads.CreatePlot(player)
+	Stages.Watch(player)
+	player.CharacterAdded:Connect(function(character)
+		dress(player, character)
+	end)
+	if not Saves.Open(player) or not player.Parent then
+		return
+	end
+	if player.Character then
+		dress(player, player.Character)
+	end
+end
+
+local function onRemoving(player: Player)
+	Saves.Close(player)
+	Economy.Forget(player)
+	BaseService.Forget(player)
+	Stages.Forget(player)
+	Pads.Forget(player)
+	Shop.Forget(player)
+	Retention.Forget(player)
+	PlayerLock.Forget(player)
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+Players.PlayerRemoving:Connect(onRemoving)
+for _, player in Players:GetPlayers() do
+	task.spawn(onPlayer, player)
+end
+]]></string>
+      </Properties>
+      <Item class="ModuleScript" referent="18">
+        <Properties>
+          <string name="Name">Base</string>
+          <string name="Source"><![CDATA[--!strict
+-- TODO(base-team): Replace this stub with the tycoon.
+-- Keep these calls working:
+--   GetTier(player) -> number
+--   TierChanged:Fire(player, tier)
+--   ExportState(player) -> plain table   (stored at profile.base untouched by Saves)
+--   ImportState(player, blob)
+-- The slice's blob is { tier = number, pads = { [padId] = true } } plus any
+-- extra keys you put in the table. Extra keys round-trip.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Signal = require(ReplicatedStorage.Shared.Signal)
+local JsonCopy = require(ReplicatedStorage.Shared.JsonCopy)
+
+local BaseService = {}
+BaseService.TierChanged = Signal.new()
+BaseService.Loaded = Signal.new()
+
+local tiers: { [number]: number } = {}
+local pads: { [number]: { [string]: boolean } } = {}
+local rawBlob: { [number]: { [string]: any } } = {}
+
+local function userIdOf(player: Player): number
+	return player.UserId
+end
+
+function BaseService.GetTier(player: Player): number
+	return tiers[userIdOf(player)] or 0
+end
+
+function BaseService.SetTier(player: Player, tier: number)
+	if type(tier) ~= "number" then
+		error("tier must be a number", 2)
+	end
+	local stored = math.max(0, math.floor(tier))
+	local userId = userIdOf(player)
+	if tiers[userId] == stored then
+		return
+	end
+	tiers[userId] = stored
+	BaseService.TierChanged:Fire(player, stored)
+end
+
+function BaseService.GetPads(player: Player): { [string]: boolean }
+	return table.clone(pads[userIdOf(player)] or {})
+end
+
+function BaseService.SetPad(player: Player, padId: string, owned: boolean)
+	local userId = userIdOf(player)
+	local map = pads[userId]
+	if not map then
+		map = {}
+		pads[userId] = map
+	end
+	if owned then
+		map[padId] = true
+	else
+		map[padId] = nil
+	end
+end
+
+function BaseService.ExportState(player: Player): { [string]: any }
+	local userId = userIdOf(player)
+	local data = JsonCopy(rawBlob[userId] or {})
+	if type(data) ~= "table" then
+		data = {}
+	end
+	data.tier = BaseService.GetTier(player)
+	data.pads = BaseService.GetPads(player)
+	data.session = nil
+	return data
+end
+
+function BaseService.ImportState(player: Player, blob: any)
+	local userId = userIdOf(player)
+	if type(blob) ~= "table" then
+		blob = {}
+	end
+	rawBlob[userId] = JsonCopy(blob) or {}
+	local tier = blob.tier
+	if type(tier) ~= "number" then
+		tier = 0
+	end
+	tiers[userId] = math.clamp(math.floor(tier), 0, 100)
+	local owned: { [string]: boolean } = {}
+	if type(blob.pads) == "table" then
+		for key, value in blob.pads do
+			if type(key) == "string" and value == true then
+				owned[key] = true
+			end
+		end
+	end
+	pads[userId] = owned
+	BaseService.TierChanged:Fire(player, tiers[userId])
+	BaseService.Loaded:Fire(player)
+end
+
+function BaseService.Forget(player: Player)
+	local userId = userIdOf(player)
+	tiers[userId] = nil
+	pads[userId] = nil
+	rawBlob[userId] = nil
+end
+
+return BaseService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="19">
+        <Properties>
+          <string name="Name">Gear</string>
+          <string name="Source"><![CDATA[--!strict
+-- Cosmetics the passes and the day-7 sock actually equip.
+-- Foam Fangs is a toy. Do not add damage, knockback, or explosions.
+
+local Debris = game:GetService("Debris")
+
+local Gear = {}
+
+local function ensureSock(character: Model)
+	if character:FindFirstChild("LuckyGameSock") then
+		return
+	end
+	local foot = character:FindFirstChild("LeftFoot") or character:FindFirstChild("Left Leg")
+	if not foot or not foot:IsA("BasePart") then
+		return
+	end
+	local sock = Instance.new("Part")
+	sock.Name = "LuckyGameSock"
+	sock.Size = Vector3.new(0.55, 0.8, 1)
+	sock.Color = Color3.fromRGB(250, 244, 230)
+	sock.Material = Enum.Material.Fabric
+	sock.CanCollide = false
+	sock.CanTouch = false
+	sock.Massless = true
+	sock.CFrame = foot.CFrame * CFrame.new(0, -0.15, 0)
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = foot
+	weld.Part1 = sock
+	weld.Parent = sock
+	local stripe = Instance.new("Part")
+	stripe.Name = "Stripe"
+	stripe.Size = Vector3.new(0.58, 0.18, 1.02)
+	stripe.Color = Color3.fromRGB(226, 48, 42)
+	stripe.Material = Enum.Material.Fabric
+	stripe.CanCollide = false
+	stripe.CanTouch = false
+	stripe.Massless = true
+	stripe.CFrame = sock.CFrame * CFrame.new(0, 0.15, 0)
+	local stripeWeld = Instance.new("WeldConstraint")
+	stripeWeld.Part0 = sock
+	stripeWeld.Part1 = stripe
+	stripeWeld.Parent = stripe
+	stripe.Parent = sock
+	sock.Parent = character
+end
+
+local function launchDart(tool: Tool)
+	local character = tool.Parent
+	if not character or not character:IsA("Model") then
+		return
+	end
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return
+	end
+	local dart = Instance.new("Part")
+	dart.Name = "FoamDart"
+	dart.Shape = Enum.PartType.Ball
+	dart.Size = Vector3.new(0.8, 0.8, 0.8)
+	dart.Color = Color3.fromRGB(255, 140, 48)
+	dart.Material = Enum.Material.SmoothPlastic
+	dart.CanCollide = false
+	dart.CanTouch = false
+	dart.Massless = true
+	dart.CFrame = root.CFrame * CFrame.new(0, 0.5, -3)
+	dart.AssemblyLinearVelocity = root.CFrame.LookVector * 90
+	dart:SetAttribute("Toy", true)
+	dart.Parent = workspace
+	Debris:AddItem(dart, 1.2)
+end
+
+local function ensureBlaster(player: Player)
+	local backpack = player:FindFirstChildOfClass("Backpack") or player:WaitForChild("Backpack", 5)
+	if not backpack then
+		return
+	end
+	if backpack:FindFirstChild("Foam Fangs") then
+		return
+	end
+	local character = player.Character
+	if character and character:FindFirstChild("Foam Fangs") then
+		return
+	end
+	local tool = Instance.new("Tool")
+	tool.Name = "Foam Fangs"
+	tool.ToolTip = "Toy foam blaster. Squishes nothing that matters."
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool:SetAttribute("Toy", true)
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.45, 0.45, 1.4)
+	handle.Color = Color3.fromRGB(126, 220, 86)
+	handle.Material = Enum.Material.SmoothPlastic
+	handle.CanCollide = false
+	handle.Parent = tool
+	local tip = Instance.new("Part")
+	tip.Name = "Cork"
+	tip.Shape = Enum.PartType.Ball
+	tip.Size = Vector3.new(0.55, 0.55, 0.55)
+	tip.Color = Color3.fromRGB(255, 176, 64)
+	tip.Material = Enum.Material.SmoothPlastic
+	tip.CanCollide = false
+	tip.Massless = true
+	tip.CFrame = handle.CFrame * CFrame.new(0, 0, -0.8)
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = handle
+	weld.Part1 = tip
+	weld.Parent = tip
+	tip.Parent = tool
+	tool.Activated:Connect(function()
+		launchDart(tool)
+	end)
+	tool.Parent = backpack
+end
+
+function Gear.Apply(player: Player, character: Model, flags: { foam: boolean, sock: boolean })
+	if flags.sock then
+		ensureSock(character)
+	end
+	if flags.foam then
+		ensureBlaster(player)
+	end
+end
+
+return Gear
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="20">
+        <Properties>
+          <string name="Name">Leaderstats</string>
+          <string name="Source"><![CDATA[--!strict
+local Leaderstats = {}
+
+function Leaderstats.Attach(player: Player, amount: number)
+	local existing = player:FindFirstChild("leaderstats")
+	if existing then
+		existing:Destroy()
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = "leaderstats"
+	local cash = Instance.new("IntValue")
+	cash.Name = "Cash"
+	cash.Value = math.floor(amount)
+	cash.Parent = folder
+	folder.Parent = player
+end
+
+function Leaderstats.Bind(economy: any)
+	economy.Changed:Connect(function(player: Player, amount: number)
+		local folder = player:FindFirstChild("leaderstats")
+		if not folder then
+			return
+		end
+		local cash = folder:FindFirstChild("Cash")
+		if cash and cash:IsA("IntValue") then
+			cash.Value = math.floor(amount)
+		end
+	end)
+end
+
+return Leaderstats
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="21">
+        <Properties>
+          <string name="Name">Movement</string>
+          <string name="Source"><![CDATA[--!strict
+-- Locks jump height, walkspeed, and gravity to the values CourseLayout tests.
+-- A later speed-coil pass should call SetSpeedProvider instead of fighting this.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+
+local Movement = {}
+
+local speedProvider: ((Player) -> number?)? = nil
+
+function Movement.SetSpeedProvider(provider: (Player) -> number?)
+	speedProvider = provider
+end
+
+-- World/StarterPlayer values also live in default.project.json; these writes are
+-- best-effort because some properties are not script-writable at runtime.
+local function trySet(object: any, property: string, value: any)
+	local ok, err = pcall(function()
+		object[property] = value
+	end)
+	if not ok then
+		warn(`[Movement] skipped {property}: {err}`)
+	end
+end
+
+function Movement.ApplyWorld()
+	trySet(workspace, "Gravity", CourseLayout.GRAVITY)
+	local starter = game:GetService("StarterPlayer")
+	trySet(starter, "CharacterUseJumpPower", false)
+	trySet(starter, "CharacterWalkSpeed", CourseLayout.WALK_SPEED)
+	trySet(starter, "CharacterJumpHeight", CourseLayout.JUMP_HEIGHT)
+end
+
+function Movement.ApplyCharacter(player: Player, character: Model)
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	if not humanoid or not humanoid:IsA("Humanoid") then
+		return
+	end
+	humanoid.UseJumpPower = false
+	humanoid.JumpHeight = CourseLayout.JUMP_HEIGHT
+	local speed = CourseLayout.WALK_SPEED
+	if speedProvider then
+		local custom = speedProvider(player)
+		if type(custom) == "number" and custom > 0 then
+			speed = custom
+		end
+	end
+	humanoid.WalkSpeed = speed
+end
+
+return Movement
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="22">
+        <Properties>
+          <string name="Name">Notify</string>
+          <string name="Source"><![CDATA[--!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Notify = {}
+
+local remote: RemoteEvent? = nil
+
+function Notify.Start()
+	local folder = ReplicatedStorage:FindFirstChild("Remotes")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Remotes"
+		folder.Parent = ReplicatedStorage
+	end
+	local event = Instance.new("RemoteEvent")
+	event.Name = "Notify"
+	event.Parent = folder
+	remote = event
+end
+
+function Notify.Say(player: Player, message: string)
+	if remote then
+		remote:FireClient(player, message)
+	end
+end
+
+return Notify
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="23">
+        <Properties>
+          <string name="Name">Pads</string>
+          <string name="Source"><![CDATA[--!strict
+-- Placeholder porch. TODO(base-team): swap this for real tycoon pads.
+-- Buying all three calls BaseService.SetTier(player, 1).
+-- The Crypt Key pad (PorchPads.Upgrade) unlocks after that and sets tier 2.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+local PorchPads = require(ReplicatedStorage.Shared.PorchPads)
+local Parts = require(script.Parent.Parts)
+local PorchModels = require(script.Parent.PorchModels)
+local Saves = require(script.Parent.Saves)
+local PlayerLock = require(script.Parent.PlayerLock)
+
+local Pads = {}
+
+type Plot = {
+	folder: Folder,
+	owned: { [string]: boolean },
+	prompts: { [string]: ProximityPrompt },
+	tierLabel: TextLabel,
+	spawned: { [string]: Model },
+}
+
+local plots: { [number]: Plot } = {}
+local economy: any = nil
+local base: any = nil
+local notify: any = nil
+local mapFolder: Folder? = nil
+
+local function plotOf(player: Player): Plot?
+	return plots[player.UserId]
+end
+
+local function slotOf(player: Player): number
+	local plot = plotOf(player)
+	if plot then
+		local slot = plot.folder:GetAttribute("Slot")
+		if type(slot) == "number" then
+			return slot
+		end
+	end
+	return 1
+end
+
+local function refreshTier(player: Player)
+	local plot = plotOf(player)
+	if plot then
+		plot.tierLabel.Text = "Tier " .. tostring(base.GetTier(player))
+	end
+end
+
+local function spawnOwned(player: Player, padId: string)
+	local plot = plotOf(player)
+	if not plot or plot.spawned[padId] then
+		return
+	end
+	if padId == PorchPads.Upgrade.id then
+		local placement = CourseLayout.UpgradePlacement(slotOf(player))
+		plot.spawned[padId] = PorchModels.Spawn(
+			"cryptkey",
+			Vector3.new(placement.x, placement.top + 1, placement.z),
+			plot.folder
+		)
+		local prompt = plot.prompts[padId]
+		if prompt then
+			prompt.Enabled = false
+			prompt.ActionText = "Owned"
+		end
+		return
+	end
+	local def = PorchPads.Get(padId)
+	if not def then
+		return
+	end
+	local slot = 0
+	for index, other in PorchPads.Defs do
+		if other.id == padId then
+			slot = index
+			break
+		end
+	end
+	local placements = CourseLayout.PadPlacements(slotOf(player))
+	local placement = placements[slot]
+	if not placement then
+		return
+	end
+	local x, y, z = CourseLayout.ModelPoint(placement)
+	plot.spawned[padId] = PorchModels.Spawn(def.kind, Vector3.new(x, y, z), plot.folder)
+	local prompt = plot.prompts[padId]
+	if prompt then
+		prompt.Enabled = false
+		prompt.ActionText = "Owned"
+	end
+end
+
+local nextSlot = 0
+
+local function assignSlot(): number
+	nextSlot += 1
+	return nextSlot
+end
+
+function Pads.Start(deps: { economy: any, base: any, notify: any, folder: Folder })
+	economy = deps.economy
+	base = deps.base
+	notify = deps.notify
+	mapFolder = deps.folder
+	base.TierChanged:Connect(function(player: Player)
+		refreshTier(player)
+		local plot = plotOf(player)
+		local prompt = plot and plot.prompts[PorchPads.Upgrade.id]
+		if plot and prompt and not plot.owned[PorchPads.Upgrade.id] then
+			prompt.Enabled = base.GetTier(player) >= PorchPads.Upgrade.requiresTier
+		end
+	end)
+end
+
+function Pads.CreatePlot(player: Player)
+	local parent = mapFolder
+	if not parent then
+		return
+	end
+	local slot = assignSlot()
+	local folder = Instance.new("Folder")
+	folder.Name = "Plot_" .. player.Name
+	folder:SetAttribute("OwnerUserId", player.UserId)
+	folder:SetAttribute("Slot", slot)
+	folder.Parent = parent
+
+	local placements = CourseLayout.PadPlacements(slot)
+	local prompts: { [string]: ProximityPrompt } = {}
+	for index, def in PorchPads.Defs do
+		local placement = placements[index]
+		local pad = Parts.block({
+			name = "Pad_" .. def.id,
+			size = Vector3.new(placement.size, 1, placement.size),
+			position = Vector3.new(placement.x, placement.top + 0.5, placement.z),
+			color = Color3.fromRGB(255, 206, 120),
+			parent = folder,
+			material = Enum.Material.Neon,
+		})
+		pad:SetAttribute("PadId", def.id)
+		pad:SetAttribute("OwnerUserId", player.UserId)
+		Parts.billboard(pad, def.name .. "\n" .. tostring(def.cost) .. " cash", Vector3.new(0, 3, 0), 7, 45)
+
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.ActionText = "Buy"
+		prompt.ObjectText = tostring(def.cost) .. " cash"
+		prompt.HoldDuration = 0.2
+		prompt.MaxActivationDistance = 12
+		prompt.RequiresLineOfSight = false
+		prompt.Parent = pad
+		prompt.Triggered:Connect(function(triggeringPlayer)
+			Pads.TryBuy(triggeringPlayer, def.id, player.UserId)
+		end)
+		prompts[def.id] = prompt
+	end
+
+	local upgrade = PorchPads.Upgrade
+	local spot = CourseLayout.UpgradePlacement(slot)
+	local keyPad = Parts.block({
+		name = "Pad_" .. upgrade.id,
+		size = Vector3.new(spot.size, 1, spot.size),
+		position = Vector3.new(spot.x, spot.top + 0.5, spot.z),
+		color = Color3.fromRGB(170, 70, 255),
+		parent = folder,
+		material = Enum.Material.Neon,
+	})
+	keyPad:SetAttribute("PadId", upgrade.id)
+	keyPad:SetAttribute("OwnerUserId", player.UserId)
+	Parts.billboard(
+		keyPad,
+		upgrade.name .. "\n" .. tostring(upgrade.cost) .. " cash · Tier 2",
+		Vector3.new(0, 3, 0),
+		7,
+		45
+	)
+	local keyPrompt = Instance.new("ProximityPrompt")
+	keyPrompt.ActionText = "Buy"
+	keyPrompt.ObjectText = upgrade.name .. " · " .. tostring(upgrade.cost) .. " cash"
+	keyPrompt.HoldDuration = 0.4
+	keyPrompt.MaxActivationDistance = 10
+	keyPrompt.RequiresLineOfSight = false
+	keyPrompt.Enabled = false
+	keyPrompt.Parent = keyPad
+	keyPrompt.Triggered:Connect(function(triggeringPlayer)
+		Pads.TryUpgrade(triggeringPlayer, player.UserId)
+	end)
+	prompts[upgrade.id] = keyPrompt
+
+	local sign = Parts.block({
+		name = "PlotSign",
+		size = Vector3.new(1, 4, 1),
+		position = Vector3.new(placements[2].x + 8, placements[2].top + 2, placements[2].z),
+		color = Color3.fromRGB(255, 214, 140),
+		parent = folder,
+	})
+	local board = Parts.billboard(sign, player.DisplayName .. "\nTier 0", Vector3.new(0, 3, 0), 7, 60)
+	local tierLabel = board:FindFirstChild("Text") :: TextLabel
+
+	plots[player.UserId] = {
+		folder = folder,
+		owned = {},
+		prompts = prompts,
+		tierLabel = tierLabel,
+		spawned = {},
+	}
+end
+
+function Pads.TryBuy(player: Player, padId: string, ownerUserId: number)
+	if player.UserId ~= ownerUserId then
+		notify.Say(player, "That porch belongs to someone else.")
+		return
+	end
+	if not Saves.IsLoaded(player) then
+		notify.Say(player, "Still clocking in your tips.")
+		return
+	end
+	local plot = plotOf(player)
+	if not plot then
+		return
+	end
+	local preview = PorchPads.Preview(plot.owned, padId, economy.GetCash(player))
+	if not preview.ok or not preview.owned or not preview.cost then
+		if preview.reason == "poor" then
+			notify.Say(player, "Need " .. tostring(preview.cost) .. " cash. Run Suburbs Delivery.")
+		elseif preview.reason == "already" then
+			notify.Say(player, "You already bought that.")
+		end
+		return
+	end
+	if PlayerLock.IsBusy(player) then
+		notify.Say(player, "Syncing. Try the pad again.")
+		return
+	end
+	PlayerLock.Try(player, function()
+		local again = PorchPads.Preview(plot.owned, padId, economy.GetCash(player))
+		if not again.ok or not again.owned or not again.cost then
+			return
+		end
+		if not economy.TrySpend(player, again.cost, economy.Reasons.BasePad) then
+			notify.Say(player, "Need " .. tostring(again.cost) .. " cash. Run Suburbs Delivery.")
+			return
+		end
+		plot.owned = again.owned
+		base.SetPad(player, padId, true)
+		spawnOwned(player, padId)
+		local def = PorchPads.Get(padId)
+		notify.Say(player, "Bought " .. (def and def.name or padId) .. ".")
+		if again.tier == 1 then
+			base.SetTier(player, 1)
+			notify.Say(player, "Porch complete. Graveyard Rugby Rush is open. Next: the Crypt Key.")
+		end
+		refreshTier(player)
+		Saves.Save(player)
+	end)
+end
+
+function Pads.TryUpgrade(player: Player, ownerUserId: number)
+	if player.UserId ~= ownerUserId then
+		notify.Say(player, "That porch belongs to someone else.")
+		return
+	end
+	if not Saves.IsLoaded(player) then
+		notify.Say(player, "Still clocking in your tips.")
+		return
+	end
+	local plot = plotOf(player)
+	if not plot then
+		return
+	end
+	local upgrade = PorchPads.Upgrade
+	local preview = PorchPads.PreviewUpgrade(plot.owned, base.GetTier(player), economy.GetCash(player))
+	if not preview.ok then
+		if preview.reason == "poor" then
+			notify.Say(player, "Need " .. tostring(upgrade.cost) .. " cash. Graveyard Rugby Rush pays 150.")
+		elseif preview.reason == "tier" then
+			notify.Say(player, "Finish the porch (bench, ice bath, bag shrine) first.")
+		elseif preview.reason == "already" then
+			notify.Say(player, "The crypt already knows your feet.")
+		end
+		return
+	end
+	if PlayerLock.IsBusy(player) then
+		notify.Say(player, "Syncing. Try the pad again.")
+		return
+	end
+	PlayerLock.Try(player, function()
+		local again = PorchPads.PreviewUpgrade(plot.owned, base.GetTier(player), economy.GetCash(player))
+		if not again.ok or not again.owned or not again.cost then
+			return
+		end
+		if not economy.TrySpend(player, again.cost, economy.Reasons.BasePad) then
+			notify.Say(player, "Need " .. tostring(upgrade.cost) .. " cash.")
+			return
+		end
+		plot.owned = again.owned
+		base.SetPad(player, upgrade.id, true)
+		spawnOwned(player, upgrade.id)
+		base.SetTier(player, math.max(base.GetTier(player), upgrade.tier))
+		notify.Say(player, "Crypt Key bought. Sore Foot Lava Crypt is open, behind the manor gate.")
+		refreshTier(player)
+		Saves.Save(player)
+	end)
+end
+
+function Pads.Export(player: Player): { [string]: boolean }
+	local plot = plotOf(player)
+	if not plot then
+		return {}
+	end
+	return table.clone(plot.owned)
+end
+
+function Pads.Load(player: Player, owned: any)
+	local plot = plotOf(player)
+	if not plot or type(owned) ~= "table" then
+		return
+	end
+	local restored: { [string]: boolean } = {}
+	for _, def in PorchPads.Defs do
+		if owned[def.id] == true then
+			restored[def.id] = true
+			base.SetPad(player, def.id, true)
+			spawnOwned(player, def.id)
+		end
+	end
+	local upgrade = PorchPads.Upgrade
+	if owned[upgrade.id] == true and PorchPads.OwnsAll(restored) then
+		restored[upgrade.id] = true
+		base.SetPad(player, upgrade.id, true)
+		spawnOwned(player, upgrade.id)
+	end
+	plot.owned = restored
+	if PorchPads.OwnsAll(restored) then
+		local earned = if restored[upgrade.id] then upgrade.tier else 1
+		base.SetTier(player, math.max(base.GetTier(player), earned))
+	end
+	local prompt = plot.prompts[upgrade.id]
+	if prompt and not restored[upgrade.id] then
+		prompt.Enabled = base.GetTier(player) >= upgrade.requiresTier
+	end
+	refreshTier(player)
+end
+
+function Pads.Forget(player: Player)
+	local plot = plots[player.UserId]
+	plots[player.UserId] = nil
+	if plot then
+		plot.folder:Destroy()
+	end
+end
+
+return Pads
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="24">
+        <Properties>
+          <string name="Name">Parts</string>
+          <string name="Source"><![CDATA[--!strict
+-- Part, sign, and label helpers shared by the runtime-built map.
+-- Everything is built from Parts and built-in Materials. No asset ids.
+
+local Players = game:GetService("Players")
+
+local Parts = {}
+
+export type BlockProps = {
+	name: string,
+	size: Vector3,
+	cframe: CFrame?,
+	position: Vector3?,
+	color: Color3,
+	parent: Instance,
+	material: Enum.Material?,
+	transparency: number?,
+	canCollide: boolean?,
+	canTouch: boolean?,
+	shape: Enum.PartType?,
+	decor: boolean?,
+}
+
+local function enumItem(enumType: any, name: string): any?
+	local ok, item = pcall(function()
+		return enumType[name]
+	end)
+	if ok then
+		return item
+	end
+	return nil
+end
+
+-- Newer materials (Cardboard, RoofShingles, ...) fall back if this client lacks them.
+function Parts.material(name: string, fallback: Enum.Material): Enum.Material
+	local item = enumItem(Enum.Material, name)
+	if item then
+		return item :: Enum.Material
+	end
+	return fallback
+end
+
+local gothic: Enum.Font? = nil
+function Parts.gothicFont(): Enum.Font
+	if gothic then
+		return gothic
+	end
+	for _, name in { "Creepster", "Fondamento", "Antique" } do
+		local item = enumItem(Enum.Font, name)
+		if item then
+			gothic = item :: Enum.Font
+			return item :: Enum.Font
+		end
+	end
+	gothic = Enum.Font.GothamBold
+	return Enum.Font.GothamBold
+end
+
+function Parts.block(props: BlockProps): Part
+	local part = Instance.new("Part")
+	part.Name = props.name
+	part.Anchored = true
+	if props.shape then
+		part.Shape = props.shape
+	end
+	part.Size = props.size
+	if props.cframe then
+		part.CFrame = props.cframe
+	elseif props.position then
+		part.CFrame = CFrame.new(props.position)
+	end
+	part.Color = props.color
+	part.Material = props.material or Enum.Material.SmoothPlastic
+	part.Transparency = props.transparency or 0
+	if props.decor then
+		part.CanCollide = if props.canCollide == nil then false else props.canCollide
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+	else
+		part.CanCollide = if props.canCollide == nil then true else props.canCollide
+		part.CanTouch = if props.canTouch == nil then true else props.canTouch
+	end
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = props.parent
+	return part
+end
+
+function Parts.wedge(
+	name: string,
+	size: Vector3,
+	cframe: CFrame,
+	color: Color3,
+	parent: Instance,
+	material: Enum.Material?
+): WedgePart
+	local part = Instance.new("WedgePart")
+	part.Name = name
+	part.Anchored = true
+	part.Size = size
+	part.CFrame = cframe
+	part.Color = color
+	part.Material = material or Enum.Material.SmoothPlastic
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = parent
+	return part
+end
+
+-- Small world-sized label. Sized in studs so it shrinks with distance like a
+-- real object, never drawn on top of the world, and hidden past maxDistance.
+function Parts.billboard(
+	parent: Instance,
+	text: string,
+	offset: Vector3?,
+	studsWide: number?,
+	maxDistance: number?
+): BillboardGui
+	local wide = studsWide or 6
+	local lines = 1
+	for _ in string.gmatch(text, "\n") do
+		lines += 1
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "Label"
+	gui.Size = UDim2.fromScale(wide, math.max(1.2, lines * 1.1))
+	gui.StudsOffset = offset or Vector3.new(0, 3, 0)
+	gui.AlwaysOnTop = false
+	gui.LightInfluence = 0
+	gui.MaxDistance = maxDistance or 55
+	gui.Parent = parent
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Text"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Font = Enum.Font.GothamBold
+	label.Text = text
+	label.TextColor3 = Color3.fromRGB(255, 244, 230)
+	label.TextStrokeColor3 = Color3.fromRGB(20, 12, 16)
+	label.TextStrokeTransparency = 0.3
+	label.TextScaled = true
+	label.Parent = gui
+	return gui
+end
+
+export type SignProps = {
+	name: string,
+	parent: Instance,
+	cframe: CFrame, -- board center; LookVector points at the reader
+	width: number,
+	height: number,
+	title: string,
+	subtitle: string?,
+	board: Color3?,
+	ink: Color3?,
+	glow: Color3?,
+	material: Enum.Material?,
+	backText: string?,
+}
+
+local function surfaceText(
+	part: BasePart,
+	face: Enum.NormalId,
+	title: string,
+	subtitle: string?,
+	ink: Color3,
+	glow: Color3
+): SurfaceGui
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "Sign_" .. face.Name
+	gui.Face = face
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 40
+	gui.LightInfluence = 0
+	gui.AlwaysOnTop = false
+	gui.MaxDistance = 300
+	gui.Parent = part
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Name = "Title"
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.AnchorPoint = Vector2.new(0.5, 0)
+	titleLabel.Position = UDim2.fromScale(0.5, 0.06)
+	titleLabel.Size = UDim2.fromScale(0.92, if subtitle then 0.58 else 0.88)
+	titleLabel.Font = Parts.gothicFont()
+	titleLabel.Text = title
+	titleLabel.TextColor3 = ink
+	titleLabel.TextStrokeColor3 = glow
+	titleLabel.TextStrokeTransparency = 0.35
+	titleLabel.TextScaled = true
+	titleLabel.TextWrapped = true
+	titleLabel.Parent = gui
+
+	if subtitle then
+		local sub = Instance.new("TextLabel")
+		sub.Name = "Subtitle"
+		sub.BackgroundTransparency = 1
+		sub.AnchorPoint = Vector2.new(0.5, 1)
+		sub.Position = UDim2.fromScale(0.5, 0.95)
+		sub.Size = UDim2.fromScale(0.9, 0.3)
+		sub.Font = Enum.Font.GothamBold
+		sub.Text = subtitle
+		sub.TextColor3 = Color3.fromRGB(240, 232, 255)
+		sub.TextStrokeColor3 = Color3.fromRGB(10, 6, 16)
+		sub.TextStrokeTransparency = 0.4
+		sub.TextScaled = true
+		sub.TextWrapped = true
+		sub.Parent = gui
+	end
+	return gui
+end
+
+-- A solid sign board with a SurfaceGui on the face that points at the reader.
+function Parts.sign(props: SignProps): Part
+	local ink = props.ink or Color3.fromRGB(255, 120, 60)
+	local glow = props.glow or Color3.fromRGB(40, 0, 30)
+	local board = Parts.block({
+		name = props.name,
+		size = Vector3.new(props.width, props.height, 0.6),
+		cframe = props.cframe,
+		color = props.board or Color3.fromRGB(34, 26, 40),
+		parent = props.parent,
+		material = props.material or Enum.Material.WoodPlanks,
+	})
+	-- Neon frame so the board reads at night.
+	local frameColor = props.glow or Color3.fromRGB(170, 70, 255)
+	local thick = 0.3
+	for _, edge in
+		{
+			{ Vector3.new(props.width + thick, thick, 0.7), Vector3.new(0, props.height / 2, 0) },
+			{ Vector3.new(props.width + thick, thick, 0.7), Vector3.new(0, -props.height / 2, 0) },
+			{ Vector3.new(thick, props.height, 0.7), Vector3.new(props.width / 2, 0, 0) },
+			{ Vector3.new(thick, props.height, 0.7), Vector3.new(-props.width / 2, 0, 0) },
+		}
+	do
+		Parts.block({
+			name = "Frame",
+			size = edge[1],
+			cframe = props.cframe * CFrame.new(edge[2]),
+			color = frameColor,
+			parent = board,
+			material = Enum.Material.Neon,
+			decor = true,
+		})
+	end
+	surfaceText(board, Enum.NormalId.Front, props.title, props.subtitle, ink, glow)
+	if props.backText then
+		surfaceText(board, Enum.NormalId.Back, props.backText, nil, ink, glow)
+	end
+	return board
+end
+
+-- Small text painted onto one face of an existing part (checkpoints, plaques).
+function Parts.decal(part: BasePart, face: Enum.NormalId, text: string, color: Color3?): SurfaceGui
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "Paint_" .. face.Name
+	gui.Face = face
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0
+	gui.AlwaysOnTop = false
+	gui.MaxDistance = 120
+	gui.Parent = part
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.Size = UDim2.fromScale(0.8, 0.35)
+	label.Font = Parts.gothicFont()
+	label.Text = text
+	label.TextColor3 = color or Color3.fromRGB(255, 250, 240)
+	label.TextTransparency = 0.1
+	label.TextStrokeTransparency = 0.6
+	label.TextScaled = true
+	label.Parent = gui
+	return gui
+end
+
+function Parts.light(parent: BasePart, color: Color3, range: number?, brightness: number?): PointLight
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Range = range or 14
+	light.Brightness = brightness or 1.5
+	light.Shadows = false
+	light.Parent = parent
+	return light
+end
+
+function Parts.playerFromHit(hit: BasePart): Player?
+	local current: Instance? = hit
+	while current do
+		if current:IsA("Model") then
+			local player = Players:GetPlayerFromCharacter(current)
+			if player then
+				return player
+			end
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+function Parts.standCFrame(part: BasePart, facing: Vector3?): CFrame
+	local top = part.Position.Y + part.Size.Y / 2
+	local feet = Vector3.new(part.Position.X, top + 3.5, part.Position.Z)
+	local look = facing or part:GetAttribute("Facing")
+	if typeof(look) ~= "Vector3" or (look :: Vector3).Magnitude < 0.01 then
+		look = Vector3.new(0, 0, 1)
+	end
+	return CFrame.lookAt(feet, feet + (look :: Vector3))
+end
+
+function Parts.rgb(channels: { number }): Color3
+	return Color3.fromRGB(channels[1], channels[2], channels[3])
+end
+
+return Parts
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="25">
+        <Properties>
+          <string name="Name">PlayerLock</string>
+          <string name="Source"><![CDATA[--!strict
+-- One mutating critical section per player. Re-entrant on the same coroutine
+-- so a claim can save without deadlocking. A different coroutine gets "busy".
+
+local PlayerLock = {}
+
+local owner: { [number]: thread } = {}
+
+function PlayerLock.IsBusy(player: Player): boolean
+	local current = owner[player.UserId]
+	return current ~= nil and current ~= coroutine.running()
+end
+
+function PlayerLock.Try(player: Player, fn: () -> ()): (boolean, string?)
+	local userId = player.UserId
+	local thread = coroutine.running()
+	if owner[userId] ~= nil and owner[userId] ~= thread then
+		return false, "busy"
+	end
+	local nested = owner[userId] == thread
+	if not nested then
+		owner[userId] = thread
+	end
+	local ok, err = pcall(fn)
+	if not nested and owner[userId] == thread then
+		owner[userId] = nil
+	end
+	if not ok then
+		warn("[CountCrackula] " .. tostring(err))
+		return false, "error"
+	end
+	return true, nil
+end
+
+function PlayerLock.Forget(player: Player)
+	owner[player.UserId] = nil
+end
+
+return PlayerLock
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="26">
+        <Properties>
+          <string name="Name">PorchModels</string>
+          <string name="Source"><![CDATA[--!strict
+-- Toy placeholder props. No gameplay except the bench, which is a Seat.
+
+local PorchModels = {}
+
+local function part(
+	model: Model,
+	name: string,
+	size: Vector3,
+	cframe: CFrame,
+	color: Color3,
+	material: Enum.Material?
+): Part
+	local piece = Instance.new("Part")
+	piece.Name = name
+	piece.Anchored = true
+	piece.CanCollide = true
+	piece.Size = size
+	piece.CFrame = cframe
+	piece.Color = color
+	piece.Material = material or Enum.Material.SmoothPlastic
+	piece.TopSurface = Enum.SurfaceType.Smooth
+	piece.BottomSurface = Enum.SurfaceType.Smooth
+	piece.Parent = model
+	return piece
+end
+
+function PorchModels.Spawn(kind: string, position: Vector3, parent: Instance): Model
+	local model = Instance.new("Model")
+	model.Name = "Porch_" .. kind
+	local origin = CFrame.new(position)
+
+	if kind == "bench" then
+		local seat = Instance.new("Seat")
+		seat.Name = "Bench"
+		seat.Anchored = true
+		seat.Size = Vector3.new(4.5, 0.45, 1.8)
+		seat.CFrame = origin * CFrame.new(0, 1.3, 0)
+		seat.Color = Color3.fromRGB(122, 74, 48)
+		seat.Material = Enum.Material.Wood
+		seat.Parent = model
+		part(
+			model,
+			"Back",
+			Vector3.new(4.5, 1.6, 0.35),
+			origin * CFrame.new(0, 2.3, -0.85),
+			Color3.fromRGB(96, 56, 36),
+			Enum.Material.Wood
+		)
+		model.PrimaryPart = seat
+	elseif kind == "icebath" then
+		local tub = part(
+			model,
+			"Tub",
+			Vector3.new(6, 2.2, 3.2),
+			origin * CFrame.new(0, 1.1, 0),
+			Color3.fromRGB(236, 240, 244),
+			Enum.Material.SmoothPlastic
+		)
+		local water = part(
+			model,
+			"Water",
+			Vector3.new(5.2, 0.45, 2.4),
+			origin * CFrame.new(0, 2.05, 0),
+			Color3.fromRGB(120, 210, 255),
+			Enum.Material.Neon
+		)
+		water.CanCollide = false
+		model.PrimaryPart = tub
+	elseif kind == "shrine" then
+		local pedestal = part(
+			model,
+			"Pedestal",
+			Vector3.new(4, 3, 4),
+			origin * CFrame.new(0, 1.5, 0),
+			Color3.fromRGB(72, 64, 78),
+			Enum.Material.Slate
+		)
+		local bag = part(
+			model,
+			"Bag",
+			Vector3.new(2.6, 2.8, 1.5),
+			origin * CFrame.new(0, 4.4, 0),
+			Color3.fromRGB(226, 48, 42),
+			Enum.Material.SmoothPlastic
+		)
+		part(
+			model,
+			"Flap",
+			Vector3.new(2.6, 0.9, 1.5),
+			origin * CFrame.new(0, 6.1, 0),
+			Color3.fromRGB(176, 32, 36)
+		)
+		local mark = part(
+			model,
+			"Mark",
+			Vector3.new(1.1, 1.1, 0.2),
+			origin * CFrame.new(0, 4.5, 0.8),
+			Color3.fromRGB(255, 196, 64),
+			Enum.Material.Neon
+		)
+		mark.CanCollide = false
+		model.PrimaryPart = pedestal
+		local board = Instance.new("BillboardGui")
+		board.Size = UDim2.fromScale(4, 1.2)
+		board.StudsOffset = Vector3.new(0, 3.2, 0)
+		board.AlwaysOnTop = false
+		board.MaxDistance = 45
+		board.Parent = bag
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.fromScale(1, 1)
+		label.Font = Enum.Font.GothamBold
+		label.Text = "TIP BAG"
+		label.TextColor3 = Color3.fromRGB(255, 228, 180)
+		label.TextScaled = true
+		label.Parent = board
+	elseif kind == "cryptkey" then
+		-- A big goofy skeleton key hovering over its pad.
+		local gold = Color3.fromRGB(255, 200, 70)
+		local shaft = part(
+			model,
+			"Shaft",
+			Vector3.new(0.6, 0.6, 4),
+			origin * CFrame.new(0, 2.6, 0),
+			gold,
+			Enum.Material.Metal
+		)
+		shaft.CanCollide = false
+		local bow = part(
+			model,
+			"Bow",
+			Vector3.new(0.5, 2.4, 2.4),
+			origin * CFrame.new(0, 2.6, -2.6) * CFrame.Angles(0, math.rad(90), 0),
+			Color3.fromRGB(170, 70, 255),
+			Enum.Material.Neon
+		)
+		bow.Shape = Enum.PartType.Cylinder
+		bow.CanCollide = false
+		for index, depth in { 1.4, 0.7 } do
+			local tooth = part(
+				model,
+				"Tooth" .. tostring(index),
+				Vector3.new(0.4, 1, 0.5),
+				origin * CFrame.new(0, 2.0, depth),
+				gold,
+				Enum.Material.Metal
+			)
+			tooth.CanCollide = false
+		end
+		model.PrimaryPart = shaft
+	else
+		part(
+			model,
+			"Block",
+			Vector3.new(3, 3, 3),
+			origin * CFrame.new(0, 1.5, 0),
+			Color3.fromRGB(200, 200, 200)
+		)
+	end
+
+	model.Parent = parent
+	return model
+end
+
+return PorchModels
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="27">
+        <Properties>
+          <string name="Name">Retention</string>
+          <string name="Source"><![CDATA[--!strict
+-- Daily DoorDash shift and the offline-income cap hook.
+-- GrantOfflineIncome is for the base team: call it once per join.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+local Streak = require(ReplicatedStorage.Shared.Retention.Streak)
+local OfflineIncome = require(ReplicatedStorage.Shared.Retention.OfflineIncome)
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local Parts = require(script.Parent.Parts)
+local PlayerLock = require(script.Parent.PlayerLock)
+local Saves = require(script.Parent.Saves)
+
+local Retention = {}
+
+type Memory = {
+	streak: Streak.State,
+	lastSeen: number,
+	settled: number,
+}
+
+local state: { [number]: Memory } = {}
+local economy = Economy
+local notify: any = nil
+local base: any = nil
+local onDress: ((Player) -> ())? = nil
+
+local function memoryOf(player: Player): Memory
+	local found = state[player.UserId]
+	if not found then
+		found = { streak = Streak.Fresh(), lastSeen = 0, settled = 0 }
+		state[player.UserId] = found
+	end
+	return found
+end
+
+local function today(): number
+	return math.floor(os.time() / 86400)
+end
+
+function Retention.HasSock(player: Player): boolean
+	local found = state[player.UserId]
+	return found ~= nil and found.streak.sockGranted == true
+end
+
+function Retention.Load(player: Player, streakData: any, offlineData: any)
+	local streak = Streak.Fresh()
+	if type(streakData) == "table" then
+		streak.lastClaimDay = if type(streakData.lastClaimDay) == "number"
+			then streakData.lastClaimDay
+			else 0
+		streak.streak = if type(streakData.streak) == "number" then streakData.streak else 0
+		streak.bestStreak = if type(streakData.bestStreak) == "number"
+			then streakData.bestStreak
+			else 0
+		streak.sockGranted = streakData.sockGranted == true
+	end
+	local lastSeen = 0
+	local settled = 0
+	if type(offlineData) == "table" then
+		if type(offlineData.lastSeen) == "number" then
+			lastSeen = offlineData.lastSeen
+		end
+		if type(offlineData.settledLogoutAt) == "number" then
+			settled = offlineData.settledLogoutAt
+		end
+	end
+	state[player.UserId] = { streak = streak, lastSeen = lastSeen, settled = settled }
+end
+
+function Retention.Export(player: Player)
+	local memory = memoryOf(player)
+	return {
+		lastClaimDay = memory.streak.lastClaimDay,
+		streak = memory.streak.streak,
+		bestStreak = memory.streak.bestStreak,
+		sockGranted = memory.streak.sockGranted,
+	}
+end
+
+function Retention.ExportOffline(player: Player)
+	local memory = memoryOf(player)
+	return { lastSeen = memory.lastSeen, settledLogoutAt = memory.settled }
+end
+
+function Retention.GetOfflineSeconds(player: Player): number
+	local memory = memoryOf(player)
+	if memory.lastSeen <= 0 then
+		return 0
+	end
+	return math.max(0, os.time() - memory.lastSeen)
+end
+
+function Retention.ClaimShift(player: Player): (boolean, string)
+	if not Saves.IsLoaded(player) then
+		return false, "loading"
+	end
+	local message = "Still on the clock."
+	local ok = false
+	local ran = PlayerLock.Try(player, function()
+		local memory = memoryOf(player)
+		local claimed, newState, reward, err = Streak.Claim(memory.streak, today())
+		if not claimed or not newState or not reward then
+			message = if err == "already_claimed"
+				then "Shift already worked today."
+				else "Can't clock in."
+			return
+		end
+		local previousStreak = memory.streak
+		local cashBefore = economy.GetCash(player)
+		memory.streak = newState
+		economy.AddCash(player, reward.cash, economy.Reasons.DailyShift)
+		if reward.sock and onDress then
+			onDress(player)
+		end
+		if Saves.Save(player) then
+			ok = true
+			message = "Day "
+				.. tostring(reward.day)
+				.. " shift. +"
+				.. tostring(reward.cash)
+				.. " cash."
+			if reward.sock then
+				message ..= " The other sock is yours."
+			end
+		else
+			memory.streak = previousStreak
+			economy.Hydrate(player, cashBefore)
+			if onDress then
+				onDress(player)
+			end
+			message = "Clock-in didn't save. Try again."
+		end
+	end)
+	if not ran then
+		return false, "Busy. Try the shift again."
+	end
+	if notify then
+		notify.Say(player, message)
+	end
+	return ok, message
+end
+
+function Retention.GrantOfflineIncome(
+	player: Player,
+	rawAccrued: number,
+	elapsedSeconds: number?
+): number
+	if not Saves.IsLoaded(player) then
+		return 0
+	end
+	local granted = 0
+	PlayerLock.Try(player, function()
+		local memory = memoryOf(player)
+		if memory.lastSeen <= 0 then
+			return
+		end
+		if memory.settled == memory.lastSeen then
+			return
+		end
+		local elapsed = elapsedSeconds
+		if type(elapsed) ~= "number" then
+			elapsed = math.max(0, os.time() - memory.lastSeen)
+		end
+		local tier = if base then base.GetTier(player) else 1
+		local amount = OfflineIncome.Cap(rawAccrued, elapsed, tier)
+		local previous = memory.settled
+		local cashBefore = economy.GetCash(player)
+		if amount > 0 then
+			economy.AddCash(player, amount, economy.Reasons.OfflineTycoon)
+		end
+		memory.settled = memory.lastSeen
+		if Saves.Save(player) then
+			granted = amount
+		else
+			memory.settled = previous
+			economy.Hydrate(player, cashBefore)
+		end
+	end)
+	return granted
+end
+
+function Retention.Forget(player: Player)
+	state[player.UserId] = nil
+end
+
+function Retention.Start(deps: {
+	folder: Folder,
+	notify: any,
+	base: any,
+	onDress: (Player) -> (),
+})
+	notify = deps.notify
+	base = deps.base
+	onDress = deps.onDress
+	local pad = Parts.block({
+		name = "ShiftClock",
+		size = Vector3.new(8, 1, 8),
+		position = Vector3.new(24, CourseLayout.BASE_TOP + 0.5, -22),
+		color = Color3.fromRGB(226, 48, 42),
+		parent = deps.folder,
+		material = Enum.Material.Neon,
+	})
+	-- Kiosk sign on a post behind the pad, turned toward the spawn.
+	local signPos = Vector3.new(29, CourseLayout.BASE_TOP + 6, -22)
+	local spawnX, spawnZ = CourseLayout.SpawnPoint()
+	local look = Vector3.new(spawnX - signPos.X, 0, spawnZ - signPos.Z).Unit
+	Parts.block({
+		name = "ShiftPost",
+		size = Vector3.new(0.6, 6, 0.6),
+		position = Vector3.new(signPos.X, CourseLayout.BASE_TOP + 3, signPos.Z) - look * 0.5,
+		color = Color3.fromRGB(28, 26, 34),
+		parent = deps.folder,
+		material = Enum.Material.Metal,
+	})
+	Parts.sign({
+		name = "ShiftSign",
+		parent = deps.folder,
+		cframe = CFrame.lookAt(signPos, signPos + look),
+		width = 8,
+		height = 3,
+		title = "DOORDASH SHIFT",
+		subtitle = "Daily clock-in · 7-day streak · Day 7: a lucky sock",
+		ink = Color3.fromRGB(255, 80, 60),
+		glow = Color3.fromRGB(80, 0, 10),
+	})
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Clock in"
+	prompt.ObjectText = "Daily shift"
+	prompt.HoldDuration = 0.3
+	prompt.MaxActivationDistance = 12
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = pad
+	prompt.Triggered:Connect(function(player)
+		Retention.ClaimShift(player)
+	end)
+end
+
+return Retention
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="28">
+        <Properties>
+          <string name="Name">Saves</string>
+          <string name="Source"><![CDATA[--!strict
+-- One DataStore, session-locked, with retries.
+-- Studio without API access (or an unpublished place) falls back to an
+-- in-memory session store for this server only. Every DataStore touch is
+-- pcall-wrapped; the first access failure flips to memory and warns once.
+-- The `base` field is whatever table BaseService.ExportState returns.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local Lock = require(script.Lock)
+local Document = require(script.Document)
+local PlayerLock = require(script.Parent.PlayerLock)
+
+local Saves = {}
+
+local STORE_NAME = "CountCrackula_Player_v1"
+local LOCK_TTL = 15 * 60
+local AUTOSAVE_SECONDS = 60
+local WRITE_ATTEMPTS = 4
+local BUSY_RETRIES = 5
+local BUSY_WAIT = 2
+
+local store: any = nil
+local usingMemory = false
+local warnedMemory = false
+local studioJob: string? = nil
+local closing = false
+local loaded: { [number]: boolean } = {}
+local docs: { [number]: any } = {}
+local collect: ((Player) -> any)? = nil
+local apply: ((Player, any) -> ())? = nil
+
+local function jobId(): string
+	local id = game.JobId
+	if type(id) == "string" and id ~= "" then
+		return id
+	end
+	if studioJob == nil then
+		studioJob = "studio-" .. tostring(os.time())
+	end
+	return studioJob
+end
+
+local function keyOf(player: Player): string
+	return "player_" .. tostring(player.UserId)
+end
+
+local function memoryStore()
+	local data: { [string]: any } = {}
+	local memory = {}
+	function memory:UpdateAsync(key: string, transform: (any) -> any)
+		local old = data[key]
+		local snapshot = if type(old) == "table" then Document.Reconcile(old) else nil
+		if type(old) == "table" and type(old.session) == "table" then
+			snapshot.session = { jobId = old.session.jobId, lockedAt = old.session.lockedAt }
+		end
+		local newValue = transform(snapshot)
+		if newValue == nil then
+			return nil
+		end
+		data[key] = newValue
+		return newValue
+	end
+	return memory
+end
+
+local function isStudioAccessError(err: any): boolean
+	local text = string.lower(tostring(err))
+	return string.find(text, "studio access", 1, true) ~= nil
+		or string.find(text, "api access", 1, true) ~= nil
+		or string.find(text, "must publish", 1, true) ~= nil
+		or string.find(text, "publish this place", 1, true) ~= nil
+		or string.find(text, "not allowed", 1, true) ~= nil
+		or string.find(text, "forbidden", 1, true) ~= nil
+end
+
+local function useMemory(reason: any)
+	if not usingMemory then
+		usingMemory = true
+		store = memoryStore()
+	end
+	if not warnedMemory then
+		warnedMemory = true
+		warn(
+			"[CountCrackula] DataStore unavailable ("
+				.. tostring(reason)
+				.. "). Profiles are kept in memory for this server only. Publish the place and enable"
+				.. " Studio API access to save for real."
+		)
+	end
+end
+
+local function openLiveStore(): (boolean, any)
+	return pcall(function()
+		local service = game:GetService("DataStoreService")
+		return service:GetDataStore(STORE_NAME)
+	end)
+end
+
+local function update(key: string, transform: (any) -> any): (boolean, any)
+	local lastErr = nil
+	for attempt = 1, WRITE_ATTEMPTS do
+		local ok, result = pcall(function()
+			return store:UpdateAsync(key, transform)
+		end)
+		if ok then
+			return true, result
+		end
+		lastErr = result
+		if not usingMemory and isStudioAccessError(result) then
+			-- Access went away mid-session (or was never there): fall back once
+			-- and retry this write against memory.
+			useMemory(result)
+		end
+		if attempt < WRITE_ATTEMPTS then
+			task.wait(2 ^ (attempt - 1))
+		end
+	end
+	warn("[CountCrackula] DataStore write failed: " .. tostring(lastErr))
+	return false, lastErr
+end
+
+local function merge(doc, collected)
+	if type(collected) ~= "table" then
+		return
+	end
+	doc.cash = collected.cash
+	doc.stages = collected.stages
+	doc.streak = collected.streak
+	doc.purchases = collected.purchases
+	doc.offline = collected.offline
+	doc.base = collected.base
+end
+
+function Saves.Configure(hooks: { collect: (Player) -> any, apply: (Player, any) -> () })
+	collect = hooks.collect
+	apply = hooks.apply
+end
+
+function Saves.IsLoaded(player: Player): boolean
+	return loaded[player.UserId] == true
+end
+
+function Saves.UsingMemory(): boolean
+	return usingMemory
+end
+
+function Saves.Start()
+	local isStudio = RunService:IsStudio()
+	local openOk, live = openLiveStore()
+	if not openOk then
+		useMemory(live)
+	elseif game.PlaceId == 0 and isStudio then
+		-- Unpublished Studio file: DataStores can never work here.
+		useMemory("unpublished place")
+	else
+		local probeOk, probeErr = pcall(function()
+			live:UpdateAsync("__probe", function()
+				return nil
+			end)
+		end)
+		if probeOk then
+			store = live
+		elseif isStudio or isStudioAccessError(probeErr) then
+			useMemory(probeErr)
+		else
+			store = live
+			warn("[CountCrackula] DataStore probe failed, will keep retrying: " .. tostring(probeErr))
+		end
+	end
+
+	task.spawn(function()
+		while not closing do
+			task.wait(AUTOSAVE_SECONDS)
+			if closing then
+				break
+			end
+			for _, player in Players:GetPlayers() do
+				if Saves.IsLoaded(player) and not PlayerLock.IsBusy(player) then
+					PlayerLock.Try(player, function()
+						Saves.Save(player)
+					end)
+				end
+			end
+		end
+	end)
+
+	local bound, bindErr = pcall(function()
+		game:BindToClose(function()
+			closing = true
+			for _, player in Players:GetPlayers() do
+				Saves.Close(player)
+			end
+		end)
+	end)
+	if not bound then
+		warn("[CountCrackula] BindToClose unavailable: " .. tostring(bindErr))
+	end
+end
+
+local function claim(player: Player): (boolean, any)
+	local key = keyOf(player)
+	local id = jobId()
+	for attempt = 1, BUSY_RETRIES do
+		local status = "busy"
+		local ok, result = update(key, function(old)
+			local session = if type(old) == "table" then old.session else nil
+			local newSession, claimStatus = Lock.Claim(session, id, os.time(), LOCK_TTL)
+			status = claimStatus
+			if not newSession then
+				return nil
+			end
+			local doc = if type(old) == "table" then old else Document.Template()
+			doc.session = newSession
+			return doc
+		end)
+		if not ok then
+			return false, "error"
+		end
+		if status ~= "busy" and type(result) == "table" then
+			return true, result
+		end
+		if attempt < BUSY_RETRIES then
+			task.wait(BUSY_WAIT)
+		end
+	end
+	return false, "busy"
+end
+
+function Saves.Open(player: Player): boolean
+	if loaded[player.UserId] then
+		return true
+	end
+	if store == nil then
+		player:Kick("The tip jar is not open yet. Rejoin in a moment.")
+		return false
+	end
+	local ok, result = claim(player)
+	if not player.Parent then
+		return false
+	end
+	if not ok then
+		if result == "busy" then
+			player:Kick("You're still clocked in on another server. Wait a minute and rejoin.")
+		else
+			player:Kick("The tip jar is stuck. Rejoin in a moment.")
+		end
+		return false
+	end
+	local doc = Document.Reconcile(result)
+	docs[player.UserId] = doc
+	if apply then
+		local applied, err = pcall(apply, player, doc)
+		if not applied then
+			warn("[CountCrackula] profile apply failed: " .. tostring(err))
+		end
+	end
+	if not player.Parent then
+		Saves.Close(player)
+		return false
+	end
+	loaded[player.UserId] = true
+	PlayerLock.Try(player, function()
+		Saves.Save(player)
+	end)
+	return true
+end
+
+function Saves.Save(player: Player): boolean
+	if not loaded[player.UserId] then
+		return false
+	end
+	local doc = docs[player.UserId]
+	if not doc or not collect then
+		return false
+	end
+	merge(doc, collect(player))
+	local id = jobId()
+	local status = "lost"
+	local ok, result = update(keyOf(player), function(old)
+		if type(old) ~= "table" or not Lock.Owns(old.session, id) then
+			status = "lost"
+			return nil
+		end
+		local newSession = Lock.Claim(old.session, id, os.time(), LOCK_TTL)
+		if not newSession then
+			status = "lost"
+			return nil
+		end
+		old.cash = doc.cash
+		old.stages = doc.stages
+		old.streak = doc.streak
+		old.purchases = doc.purchases
+		old.offline = doc.offline
+		old.base = doc.base
+		old.session = newSession
+		status = "ok"
+		return old
+	end)
+	return ok and status == "ok" and type(result) == "table"
+end
+
+function Saves.Close(player: Player)
+	local userId = player.UserId
+	local doc = docs[userId]
+	if not doc then
+		loaded[userId] = nil
+		return
+	end
+	if loaded[userId] and collect then
+		merge(doc, collect(player))
+	end
+	if type(doc.offline) ~= "table" then
+		doc.offline = { lastSeen = 0, settledLogoutAt = 0 }
+	end
+	doc.offline.lastSeen = os.time()
+	local id = jobId()
+	update(keyOf(player), function(old)
+		if type(old) ~= "table" or not Lock.Owns(old.session, id) then
+			return nil
+		end
+		old.cash = doc.cash
+		old.stages = doc.stages
+		old.streak = doc.streak
+		old.purchases = doc.purchases
+		old.offline = doc.offline
+		old.base = doc.base
+		old.session = nil
+		return old
+	end)
+	docs[userId] = nil
+	loaded[userId] = nil
+end
+
+return Saves
+]]></string>
+        </Properties>
+        <Item class="ModuleScript" referent="29">
+          <Properties>
+            <string name="Name">Document</string>
+            <string name="Source"><![CDATA[--!strict
+-- Profile shape for the one player DataStore.
+-- `base` is stored as the base team handed it over. We do not interpret it here.
+
+local JsonCopy
+if script ~= nil then
+	JsonCopy = require(game:GetService("ReplicatedStorage").Shared.JsonCopy)
+else
+	JsonCopy = require("../../shared/JsonCopy")
+end
+
+local Document = {}
+
+local KNOWN = {
+	cash = true,
+	stages = true,
+	streak = true,
+	purchases = true,
+	offline = true,
+	base = true,
+	session = true,
+}
+
+local PASS_KEYS = { "doubleCash", "speedCoil", "vip", "foamBlaster" }
+
+function Document.Template()
+	return {
+		cash = 0,
+		stages = { checkpoint = "", clears = {} },
+		streak = { lastClaimDay = 0, streak = 0, bestStreak = 0, sockGranted = false },
+		purchases = {
+			receipts = {},
+			passes = {
+				doubleCash = false,
+				speedCoil = false,
+				vip = false,
+				foamBlaster = false,
+			},
+		},
+		offline = { lastSeen = 0, settledLogoutAt = 0 },
+		base = {},
+	}
+end
+
+local function nonNegativeInt(value: any): number?
+	if type(value) == "number" and value == value and value >= 0 and value ~= math.huge then
+		return math.floor(value)
+	end
+	return nil
+end
+
+function Document.Reconcile(saved: any)
+	local doc = Document.Template()
+	if type(saved) ~= "table" then
+		return doc
+	end
+
+	local cash = nonNegativeInt(saved.cash)
+	if cash then
+		doc.cash = cash
+	end
+
+	if type(saved.stages) == "table" then
+		if type(saved.stages.checkpoint) == "string" then
+			doc.stages.checkpoint = saved.stages.checkpoint
+		end
+		if type(saved.stages.clears) == "table" then
+			for key, value in saved.stages.clears do
+				local count = nonNegativeInt(value)
+				if type(key) == "string" and count then
+					doc.stages.clears[key] = count
+				end
+			end
+		end
+	end
+
+	if type(saved.streak) == "table" then
+		local day = nonNegativeInt(saved.streak.lastClaimDay)
+		local streak = nonNegativeInt(saved.streak.streak)
+		local best = nonNegativeInt(saved.streak.bestStreak)
+		if day then
+			doc.streak.lastClaimDay = day
+		end
+		if streak then
+			doc.streak.streak = streak
+		end
+		if best then
+			doc.streak.bestStreak = best
+		end
+		doc.streak.sockGranted = saved.streak.sockGranted == true
+	end
+
+	if type(saved.purchases) == "table" then
+		if type(saved.purchases.passes) == "table" then
+			for _, key in PASS_KEYS do
+				doc.purchases.passes[key] = saved.purchases.passes[key] == true
+			end
+		end
+		if type(saved.purchases.receipts) == "table" then
+			for key, value in saved.purchases.receipts do
+				local productId = if type(value) == "table"
+					then nonNegativeInt(value.productId)
+					else nil
+				local at = if type(value) == "table" then nonNegativeInt(value.at) else nil
+				if type(key) == "string" and productId and at then
+					doc.purchases.receipts[key] = { productId = productId, at = at }
+				end
+			end
+		end
+	end
+
+	if type(saved.offline) == "table" then
+		local lastSeen = nonNegativeInt(saved.offline.lastSeen)
+		local settled = nonNegativeInt(saved.offline.settledLogoutAt)
+		if lastSeen then
+			doc.offline.lastSeen = lastSeen
+		end
+		if settled then
+			doc.offline.settledLogoutAt = settled
+		end
+	end
+
+	if type(saved.base) == "table" then
+		doc.base = JsonCopy(saved.base)
+	end
+
+	if type(saved.session) == "table" and type(saved.session.jobId) == "string" then
+		doc.session = {
+			jobId = saved.session.jobId,
+			lockedAt = nonNegativeInt(saved.session.lockedAt) or 0,
+		}
+	end
+
+	for key, value in saved do
+		if type(key) == "string" and not KNOWN[key] then
+			local cloned = JsonCopy(value)
+			if cloned ~= nil then
+				doc[key] = cloned
+			end
+		end
+	end
+
+	return doc
+end
+
+return Document
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="30">
+          <Properties>
+            <string name="Name">Lock</string>
+            <string name="Source"><![CDATA[--!strict
+-- Session-lock decision. Pure: the DataStore wrapper does the retries.
+-- A lock older than ttl can be stolen. A live lock owned by someone else is busy.
+
+local Lock = {}
+
+export type Session = {
+	jobId: string,
+	lockedAt: number,
+}
+
+export type ClaimStatus = "acquired" | "refreshed" | "stolen" | "busy"
+
+function Lock.Claim(session: any, jobId: string, now: number, ttl: number): (Session?, ClaimStatus)
+	if type(jobId) ~= "string" or jobId == "" then
+		return nil, "busy"
+	end
+	if type(session) ~= "table" or type(session.jobId) ~= "string" or session.jobId == "" then
+		return { jobId = jobId, lockedAt = now }, "acquired"
+	end
+	if session.jobId == jobId then
+		return { jobId = jobId, lockedAt = now }, "refreshed"
+	end
+	local lockedAt = if type(session.lockedAt) == "number" then session.lockedAt else 0
+	local age = now - lockedAt
+	if age < ttl then
+		return nil, "busy"
+	end
+	return { jobId = jobId, lockedAt = now }, "stolen"
+end
+
+function Lock.Owns(session: any, jobId: string): boolean
+	return type(session) == "table" and session.jobId == jobId
+end
+
+return Lock
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+      <Item class="ModuleScript" referent="31">
+        <Properties>
+          <string name="Name">Shop</string>
+          <string name="Source"><![CDATA[--!strict
+-- Dev products go through ProcessReceipt. Game passes are ownership checks.
+-- Ids of 0 never grant. Placeholder SKUs live in Shared.Shop.Catalog.
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Catalog = require(ReplicatedStorage.Shared.Shop.Catalog)
+local Receipts = require(ReplicatedStorage.Shared.Shop.Receipts)
+local Economy = require(ReplicatedStorage.Shared.Economy)
+
+local PlayerLock = require(script.Parent.PlayerLock)
+local Saves = require(script.Parent.Saves)
+local Stages = require(script.Parent.Stages)
+local Movement = require(script.Parent.Movement)
+local Gear = require(script.Parent.Gear)
+
+local Shop = {}
+
+type PassMap = { [string]: boolean }
+type ReceiptMap = { [string]: { productId: number, at: number } }
+
+local passes: { [number]: PassMap } = {}
+local receipts: { [number]: ReceiptMap } = {}
+local notify: any = nil
+local hasSock: ((Player) -> boolean)? = nil
+local lastRefresh: { [number]: number } = {}
+
+local function blankPasses(): PassMap
+	return { doubleCash = false, speedCoil = false, vip = false, foamBlaster = false }
+end
+
+local function passMap(player: Player): PassMap
+	local map = passes[player.UserId]
+	if not map then
+		map = blankPasses()
+		passes[player.UserId] = map
+	end
+	return map
+end
+
+local function receiptMap(player: Player): ReceiptMap
+	local map = receipts[player.UserId]
+	if not map then
+		map = {}
+		receipts[player.UserId] = map
+	end
+	return map
+end
+
+function Shop.OwnsPass(player: Player, key: string): boolean
+	local map = passes[player.UserId]
+	return map ~= nil and map[key] == true
+end
+
+local function dress(player: Player)
+	if Shop.OwnsPass(player, "doubleCash") then
+		Economy.SetEarnMultiplier(player, 2)
+	else
+		Economy.SetEarnMultiplier(player, 1)
+	end
+	local character = player.Character
+	if character then
+		Movement.ApplyCharacter(player, character)
+		Gear.Apply(player, character, {
+			foam = Shop.OwnsPass(player, "foamBlaster"),
+			sock = if hasSock then hasSock(player) else false,
+		})
+	end
+end
+
+function Shop.RefreshCharacter(player: Player)
+	dress(player)
+end
+
+local function grantProduct(player: Player, product): boolean
+	if product.kind == "cash" and type(product.cash) == "number" then
+		Economy.AddCash(player, product.cash, Economy.Reasons.DevProduct)
+		if notify then
+			notify.Say(
+				player,
+				"+" .. tostring(product.cash) .. " cash from " .. product.name .. "."
+			)
+		end
+		return true
+	end
+	if product.kind == "skip" then
+		if Stages.SkipCurrent(player) then
+			if notify then
+				notify.Say(player, "Route skipped.")
+			end
+		else
+			Economy.AddCash(player, 50, Economy.Reasons.DevProduct)
+			if notify then
+				notify.Say(player, "No open route. +50 cash instead.")
+			end
+		end
+		return true
+	end
+	if product.kind == "revive" then
+		Stages.Revive(player)
+		return true
+	end
+	return false
+end
+
+local function decisionEnum(name: string)
+	if name == "PurchaseGranted" then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
+function Shop.HandleReceipt(receiptInfo): string
+	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player or not Saves.IsLoaded(player) then
+		return "NotProcessedYet"
+	end
+	local product = Catalog.ProductById(receiptInfo.ProductId)
+	if not product then
+		return "NotProcessedYet"
+	end
+	local decision = "NotProcessedYet"
+	local ran = PlayerLock.Try(player, function()
+		decision = Receipts.Process(receiptMap(player), {
+			PurchaseId = receiptInfo.PurchaseId,
+			ProductId = receiptInfo.ProductId,
+		}, {
+			grant = function()
+				return grantProduct(player, product)
+			end,
+			save = function()
+				return Saves.Save(player)
+			end,
+			now = function()
+				return os.time()
+			end,
+		})
+	end)
+	if not ran then
+		return "NotProcessedYet"
+	end
+	return decision
+end
+
+function Shop.RefreshPasses(player: Player)
+	local now = os.clock()
+	if now - (lastRefresh[player.UserId] or 0) < 2 then
+		return
+	end
+	lastRefresh[player.UserId] = now
+	local map = passMap(player)
+	for _, pass in Catalog.Passes do
+		if pass.id ~= 0 then
+			local ok, owns = pcall(function()
+				return MarketplaceService:UserOwnsGamePassAsync(player.UserId, pass.id)
+			end)
+			if ok then
+				map[pass.key] = owns == true
+			end
+		end
+	end
+	dress(player)
+end
+
+function Shop.DebugGrantPass(player: Player, key: string): boolean
+	if not RunService:IsStudio() then
+		return false
+	end
+	if not Catalog.PassByKey(key) then
+		return false
+	end
+	passMap(player)[key] = true
+	dress(player)
+	return true
+end
+
+function Shop.Load(player: Player, data: any)
+	local map = blankPasses()
+	local savedReceipts: ReceiptMap = {}
+	if type(data) == "table" then
+		if type(data.passes) == "table" then
+			for _, pass in Catalog.Passes do
+				map[pass.key] = data.passes[pass.key] == true
+			end
+		end
+		if type(data.receipts) == "table" then
+			for key, value in data.receipts do
+				if type(key) == "string" and type(value) == "table" then
+					savedReceipts[key] = {
+						productId = value.productId or 0,
+						at = value.at or 0,
+					}
+				end
+			end
+		end
+	end
+	passes[player.UserId] = map
+	receipts[player.UserId] = savedReceipts
+	Shop.RefreshPasses(player)
+end
+
+function Shop.Export(player: Player)
+	local map = passMap(player)
+	local copyPasses = {
+		doubleCash = map.doubleCash == true,
+		speedCoil = map.speedCoil == true,
+		vip = map.vip == true,
+		foamBlaster = map.foamBlaster == true,
+	}
+	local copyReceipts = {}
+	for key, value in receiptMap(player) do
+		copyReceipts[key] = { productId = value.productId, at = value.at }
+	end
+	return { passes = copyPasses, receipts = copyReceipts }
+end
+
+function Shop.Forget(player: Player)
+	passes[player.UserId] = nil
+	receipts[player.UserId] = nil
+	lastRefresh[player.UserId] = nil
+end
+
+function Shop.Start(deps: { notify: any, hasSock: (Player) -> boolean })
+	notify = deps.notify
+	hasSock = deps.hasSock
+	Movement.SetSpeedProvider(function(player)
+		if Shop.OwnsPass(player, "speedCoil") then
+			return 22
+		end
+		return nil
+	end)
+
+	local folder = ReplicatedStorage:FindFirstChild("Remotes")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Remotes"
+		folder.Parent = ReplicatedStorage
+	end
+	local refresh = Instance.new("RemoteEvent")
+	refresh.Name = "RefreshPasses"
+	refresh.Parent = folder
+	refresh.OnServerEvent:Connect(function(player)
+		if Saves.IsLoaded(player) then
+			Shop.RefreshPasses(player)
+		end
+	end)
+
+	MarketplaceService.ProcessReceipt = function(receiptInfo)
+		return decisionEnum(Shop.HandleReceipt(receiptInfo))
+	end
+end
+
+return Shop
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="32">
+        <Properties>
+          <string name="Name">Stages</string>
+          <string name="Source"><![CDATA[--!strict
+-- Runs the courses. Finish pays once per trip back to that course's start.
+-- Each course checks BaseService.GetTier >= requiredTier (0, 1, 2).
+-- Courses can have several checkpoints; the save stores "courseId" for the
+-- first one and "courseId#n" for later ones (CourseLayout.EncodeCheckpoint).
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+local Parts = require(script.Parent.Parts)
+local PlayerLock = require(script.Parent.PlayerLock)
+local Saves = require(script.Parent.Saves)
+
+local Stages = {}
+
+type Course = {
+	id: string,
+	displayName: string,
+	payout: number,
+	requiredTier: number,
+	lockHint: string?,
+	startPart: BasePart,
+	checkpointPart: BasePart,
+	checkpointParts: { BasePart }?,
+	finishPart: BasePart,
+	gate: BasePart?,
+}
+
+local courses: { Course } = {}
+local economy: any = nil
+local base: any = nil
+local notify: any = nil
+local spawnCFrame: CFrame = CFrame.new()
+local readyFn: ((Player) -> boolean)? = nil
+
+local runCourse: { [number]: string } = {}
+local checkpointCFrame: { [number]: CFrame } = {}
+local checkpointKey: { [number]: string } = {}
+local clears: { [number]: { [string]: number } } = {}
+local lastBounce: { [number]: number } = {}
+
+local function isReady(player: Player): boolean
+	return readyFn == nil or readyFn(player)
+end
+
+local function userIdOf(player: Player): number
+	return player.UserId
+end
+
+local function pivot(player: Player, cf: CFrame)
+	local character = player.Character
+	if character then
+		character:PivotTo(cf)
+	end
+end
+
+local function courseById(id: string): Course?
+	for _, course in courses do
+		if course.id == id then
+			return course
+		end
+	end
+	return nil
+end
+
+local function unlocked(player: Player, course: Course): boolean
+	return base.GetTier(player) >= course.requiredTier
+end
+
+local function lockedMessage(course: Course): string
+	if course.requiredTier <= 1 then
+		return course.displayName .. " is locked. Buy the bench, the ice bath, and the bag shrine."
+	end
+	return course.displayName .. " is locked. Buy the Crypt Key on your porch."
+end
+
+local function checkpointList(course: Course): { BasePart }
+	return course.checkpointParts or { course.checkpointPart }
+end
+
+local function checkpointPartFor(course: Course, number: number): BasePart?
+	local list = checkpointList(course)
+	return list[math.clamp(number, 1, #list)]
+end
+
+local function clearCheckpoint(userId: number)
+	checkpointCFrame[userId] = nil
+	checkpointKey[userId] = nil
+end
+
+local function bounce(player: Player, message: string)
+	local now = os.clock()
+	local userId = userIdOf(player)
+	if now - (lastBounce[userId] or 0) < 1 then
+		return
+	end
+	lastBounce[userId] = now
+	pivot(player, spawnCFrame)
+	notify.Say(player, message)
+end
+
+local function arm(player: Player, course: Course)
+	if not isReady(player) then
+		if course.requiredTier <= 0 then
+			runCourse[userIdOf(player)] = course.id
+		end
+		return
+	end
+	if not unlocked(player, course) then
+		bounce(player, lockedMessage(course))
+		return
+	end
+	local userId = userIdOf(player)
+	if runCourse[userId] ~= course.id then
+		-- Starting a different course drops the old course's checkpoint.
+		clearCheckpoint(userId)
+	end
+	runCourse[userId] = course.id
+end
+
+local function bumpClear(userId: number, courseId: string)
+	local row = clears[userId]
+	if not row then
+		row = {}
+		clears[userId] = row
+	end
+	row[courseId] = (row[courseId] or 0) + 1
+end
+
+local function complete(player: Player, course: Course)
+	local userId = userIdOf(player)
+	if runCourse[userId] ~= course.id then
+		return
+	end
+	if not isReady(player) then
+		notify.Say(player, "Still clocking in your tips.")
+		return
+	end
+	if not unlocked(player, course) then
+		bounce(player, lockedMessage(course))
+		return
+	end
+	if PlayerLock.IsBusy(player) then
+		notify.Say(player, "Syncing. Step off the finish and back on.")
+		return
+	end
+	PlayerLock.Try(player, function()
+		if runCourse[userId] ~= course.id then
+			return
+		end
+		runCourse[userId] = nil
+		clearCheckpoint(userId)
+		bumpClear(userId, course.id)
+		economy.AddCash(player, course.payout, economy.Reasons.StageClear)
+		notify.Say(
+			player,
+			course.displayName .. " delivered. +" .. tostring(course.payout) .. " cash."
+		)
+		Saves.Save(player)
+	end)
+	task.delay(0.6, function()
+		if player.Parent then
+			pivot(player, Parts.standCFrame(course.startPart))
+			runCourse[userId] = course.id
+		end
+	end)
+end
+
+local function hookTouch(part: BasePart, handler: (Player) -> ())
+	part.Touched:Connect(function(hit)
+		local player = Parts.playerFromHit(hit)
+		if player then
+			handler(player)
+		end
+	end)
+end
+
+function Stages.Start(deps: {
+	courses: { Course },
+	economy: any,
+	base: any,
+	notify: any,
+	spawnCFrame: CFrame,
+	ready: ((Player) -> boolean)?,
+})
+	courses = deps.courses
+	economy = deps.economy
+	base = deps.base
+	notify = deps.notify
+	spawnCFrame = deps.spawnCFrame
+	readyFn = deps.ready
+
+	for _, course in courses do
+		hookTouch(course.startPart, function(player)
+			arm(player, course)
+		end)
+		for number, checkpointPart in checkpointList(course) do
+			hookTouch(checkpointPart, function(player)
+				if not isReady(player) then
+					return
+				end
+				if not unlocked(player, course) then
+					bounce(player, lockedMessage(course))
+					return
+				end
+				local userId = userIdOf(player)
+				if runCourse[userId] ~= course.id then
+					return
+				end
+				local key = CourseLayout.EncodeCheckpoint(course.id, number)
+				if checkpointKey[userId] == key then
+					return
+				end
+				-- Never move a saved checkpoint backwards on the same course.
+				local _, savedNumber = CourseLayout.DecodeCheckpoint(checkpointKey[userId])
+				if checkpointKey[userId] ~= nil and savedNumber > number then
+					return
+				end
+				checkpointKey[userId] = key
+				checkpointCFrame[userId] = Parts.standCFrame(checkpointPart)
+				notify.Say(player, "Checkpoint " .. tostring(number) .. ". The Count's feet thank you.")
+			end)
+		end
+		hookTouch(course.finishPart, function(player)
+			complete(player, course)
+		end)
+		if course.gate then
+			local gate = course.gate
+			hookTouch(gate, function(player)
+				if not isReady(player) then
+					return
+				end
+				if not unlocked(player, course) then
+					bounce(player, lockedMessage(course))
+				end
+			end)
+		end
+	end
+end
+
+function Stages.Watch(player: Player)
+	player.RespawnLocation = workspace:FindFirstChild("LobbySpawn") :: SpawnLocation
+	player.CharacterAdded:Connect(function(character)
+		local saved = checkpointCFrame[userIdOf(player)]
+		if not saved then
+			return
+		end
+		local root = character:WaitForChild("HumanoidRootPart", 5)
+		if root and checkpointCFrame[userIdOf(player)] == saved then
+			character:PivotTo(saved)
+		end
+	end)
+end
+
+function Stages.Forget(player: Player)
+	local userId = userIdOf(player)
+	runCourse[userId] = nil
+	clearCheckpoint(userId)
+	clears[userId] = nil
+	lastBounce[userId] = nil
+end
+
+function Stages.Export(player: Player): { checkpoint: string, clears: { [string]: number } }
+	local userId = userIdOf(player)
+	local checkpoint = checkpointKey[userId] or ""
+	local copy: { [string]: number } = table.clone(clears[userId] or {})
+	return { checkpoint = checkpoint, clears = copy }
+end
+
+function Stages.Load(player: Player, data: any)
+	if type(data) ~= "table" then
+		return
+	end
+	local userId = userIdOf(player)
+	if type(data.clears) == "table" then
+		local row: { [string]: number } = {}
+		for key, value in data.clears do
+			if type(key) == "string" and type(value) == "number" and value >= 0 then
+				row[key] = math.floor(value)
+			end
+		end
+		clears[userId] = row
+	end
+	local courseId, number = CourseLayout.DecodeCheckpoint(data.checkpoint)
+	if not courseId then
+		return
+	end
+	local course = courseById(courseId)
+	if not course then
+		return
+	end
+	local part = checkpointPartFor(course, number)
+	if not part then
+		return
+	end
+	local list = checkpointList(course)
+	checkpointKey[userId] = CourseLayout.EncodeCheckpoint(course.id, math.clamp(number, 1, #list))
+	checkpointCFrame[userId] = Parts.standCFrame(part)
+	runCourse[userId] = course.id
+	if player.Character then
+		player.Character:PivotTo(checkpointCFrame[userId])
+	end
+end
+
+function Stages.Revive(player: Player): boolean
+	local userId = userIdOf(player)
+	local course = courseById(runCourse[userId] or "") or courseById("suburbs")
+	if not course then
+		return true
+	end
+	local cf = checkpointCFrame[userId] or Parts.standCFrame(course.startPart)
+	runCourse[userId] = course.id
+	pivot(player, cf)
+	notify.Say(player, "Ankles iced. Back on the route.")
+	return true
+end
+
+-- Fell onto the ground: back to the checkpoint (or course start / spawn), no death.
+function Stages.Rescue(player: Player)
+	local userId = userIdOf(player)
+	local saved = checkpointCFrame[userId]
+	if saved then
+		pivot(player, saved)
+		return
+	end
+	local course = courseById(runCourse[userId] or "")
+	if course and unlocked(player, course) then
+		pivot(player, Parts.standCFrame(course.startPart))
+		return
+	end
+	pivot(player, spawnCFrame)
+end
+
+-- Used by the dev-product stage skip once the shop exists.
+function Stages.SkipCurrent(player: Player): boolean
+	local userId = userIdOf(player)
+	local currentId = runCourse[userId]
+	local course = if currentId then courseById(currentId) else courseById("suburbs")
+	if not course or not unlocked(player, course) then
+		return false
+	end
+	runCourse[userId] = course.id
+	complete(player, course)
+	return true
+end
+
+return Stages
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="33">
+        <Properties>
+          <string name="Name">StudioTools</string>
+          <string name="Source"><![CDATA[--!strict
+-- Studio-only chat helpers so a playtest can reach the porch without six laps.
+-- Not connected in a published server.
+
+local RunService = game:GetService("RunService")
+
+local StudioTools = {}
+
+function StudioTools.Start(economy: any, notify: any, shop: any)
+	if not RunService:IsStudio() then
+		return
+	end
+	local function hook(player: Player)
+		player.Chatted:Connect(function(message)
+			if not RunService:IsStudio() then
+				return
+			end
+			local amount = string.match(message, "^/cash%s+(%d+)$")
+			if amount then
+				local granted = tonumber(amount)
+				if granted and granted > 0 then
+					economy.AddCash(player, granted, economy.Reasons.Admin)
+					notify.Say(player, "Studio grant +" .. amount .. " cash.")
+				end
+				return
+			end
+			local passKey = string.match(message, "^/pass%s+([%w_]+)$")
+			if passKey and shop then
+				local granted = shop.DebugGrantPass(player, passKey)
+				notify.Say(
+					player,
+					if granted then "Studio pass " .. passKey .. "." else "Unknown pass."
+				)
+			end
+		end)
+	end
+	local players = game:GetService("Players")
+	players.PlayerAdded:Connect(hook)
+	for _, player in players:GetPlayers() do
+		hook(player)
+	end
+end
+
+return StudioTools
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="34">
+        <Properties>
+          <string name="Name">World</string>
+          <string name="Source"><![CDATA[--!strict
+-- Builds the whole map at runtime from CourseLayout: the moonlit lobby plaza,
+-- one approach + entrance sign per course, the courses, kill floors, gates,
+-- graveyard scatter, a moon, and bats. Gameplay reads CourseLayout and the
+-- CourseId / Role attributes (start, checkpoint, finish, kill, gate, rescue).
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+local Parts = require(script.Parent.Parts)
+local Props = require(script.Props)
+local Obstacles = require(script.Obstacles)
+
+local World = {}
+
+export type CourseParts = {
+	id: string,
+	displayName: string,
+	payout: number,
+	requiredTier: number,
+	lockHint: string,
+	startPart: BasePart,
+	checkpointPart: BasePart,
+	checkpointParts: { BasePart },
+	finishPart: BasePart,
+	gate: BasePart?,
+}
+
+local rgb = Color3.fromRGB
+local M = Enum.Material
+local TOP = CourseLayout.BASE_TOP
+
+local PLAZA = rgb(62, 56, 72)
+local PATH = rgb(92, 84, 100)
+local WOOD = rgb(96, 64, 50)
+local PURPLE = rgb(170, 80, 255)
+local RED = rgb(255, 50, 70)
+
+local function placeAabb(name: string, bounds: any, color: Color3, parent: Instance, material: Enum.Material?): Part
+	return Parts.block({
+		name = name,
+		size = Vector3.new(bounds.sx, bounds.sy, bounds.sz),
+		position = Vector3.new(bounds.x, bounds.y, bounds.z),
+		color = color,
+		parent = parent,
+		material = material,
+	})
+end
+
+local function foundation(name: string, bounds: any, color: Color3, parent: Instance, material: Enum.Material)
+	local bottom = CourseLayout.GROUND_TOP
+	local top = bounds.y - bounds.sy / 2
+	Parts.block({
+		name = name,
+		size = Vector3.new(bounds.sx - 0.2, top - bottom, bounds.sz - 0.2),
+		position = Vector3.new(bounds.x, bottom + (top - bottom) / 2, bounds.z),
+		color = color,
+		parent = parent,
+		material = material,
+	})
+end
+
+local function facingCf(x: number, y: number, z: number, lookX: number, lookZ: number): CFrame
+	local pos = Vector3.new(x, y, z)
+	return CFrame.lookAt(pos, pos + Vector3.new(lookX, 0, lookZ))
+end
+
+local function buildLobby(folder: Instance)
+	local lobby = CourseLayout.Lobby()
+	local slab = placeAabb("Lobby", lobby, PLAZA, folder, M.Cobblestone)
+	slab:SetAttribute("Role", "lobby")
+	foundation("LobbyCliff", lobby, rgb(44, 38, 52), folder, M.Rock)
+
+	-- Cross-shaped paths, embedded so they never trip anyone.
+	local halfX, halfZ = lobby.sx / 2, lobby.sz / 2
+	Parts.block({ name = "PathNS", size = Vector3.new(12, 0.2, lobby.sz), position = Vector3.new(0, TOP, 0), color = PATH, parent = folder, material = M.Pavement, decor = true })
+	Parts.block({ name = "PathEW", size = Vector3.new(lobby.sx, 0.2, 12), position = Vector3.new(0, TOP, 0), color = PATH, parent = folder, material = M.Pavement, decor = true })
+
+	-- Porch side (west).
+	local deck = CourseLayout.PorchDeck()
+	placeAabb("PorchDeck", deck, WOOD, folder, M.WoodPlanks)
+	foundation("PorchStilts", deck, rgb(50, 36, 32), folder, M.Wood)
+	placeAabb("PorchWalkway", CourseLayout.PorchWalkway(), WOOD, folder, M.WoodPlanks)
+
+	-- Iron fence around the plaza with openings at the four exits.
+	local inset = 0.6
+	local fenceY = TOP
+	local openings = { north = 9, south = 11, east = 10, west = 9 }
+	local nz, sz = halfZ - inset, -halfZ + inset
+	local ex, wx = halfX - inset, -halfX + inset
+	Props.fence(folder, Vector3.new(wx, fenceY, nz), Vector3.new(-openings.north, fenceY, nz))
+	Props.fence(folder, Vector3.new(openings.north, fenceY, nz), Vector3.new(ex, fenceY, nz))
+	Props.fence(folder, Vector3.new(wx, fenceY, sz), Vector3.new(-openings.south, fenceY, sz))
+	Props.fence(folder, Vector3.new(openings.south, fenceY, sz), Vector3.new(ex, fenceY, sz))
+	Props.fence(folder, Vector3.new(ex, fenceY, sz), Vector3.new(ex, fenceY, -openings.east))
+	Props.fence(folder, Vector3.new(ex, fenceY, openings.east), Vector3.new(ex, fenceY, nz))
+	Props.fence(folder, Vector3.new(wx, fenceY, sz), Vector3.new(wx, fenceY, -openings.west))
+	Props.fence(folder, Vector3.new(wx, fenceY, openings.west), Vector3.new(wx, fenceY, nz))
+
+	-- Haunted street (north half): two houses facing the path, mailboxes, pumpkins.
+	Props.house(folder, facingCf(-24, TOP, 36, 1, 0), rgb(70, 62, 92), rgb(255, 160, 60))
+	Props.house(folder, facingCf(24, TOP, 36, -1, 0), rgb(62, 80, 78), rgb(170, 110, 255))
+	Props.mailbox(folder, facingCf(-9, TOP, 30, 1, 0))
+	Props.mailbox(folder, facingCf(9, TOP, 42, -1, 0))
+	for z = 12, 48, 12 do
+		Props.jackOLantern(folder, facingCf(-7.5, TOP, z, 1, 0), 0.9)
+		Props.jackOLantern(folder, facingCf(7.5, TOP, z + 6, -1, 0), 0.9)
+	end
+	Props.lampPost(folder, facingCf(-9, TOP, 20, 1, 0), PURPLE)
+	Props.lampPost(folder, facingCf(9, TOP, 48, -1, 0), rgb(255, 150, 60))
+
+	-- Spawn circle: candles in a ring and four lit candelabras.
+	local sx, szSpawn = CourseLayout.SpawnPoint()
+	for i = 0, 9 do
+		local angle = i / 10 * math.pi * 2
+		local pos = Vector3.new(sx + math.cos(angle) * 7, TOP, szSpawn + math.sin(angle) * 7)
+		Parts.block({ name = "RingCandle", size = Vector3.new(0.5, 1, 0.5), position = pos + Vector3.new(0, 0.5, 0), color = rgb(246, 236, 220), parent = folder, decor = true })
+		Parts.block({ name = "RingFlame", size = Vector3.new(0.35, 0.5, 0.35), position = pos + Vector3.new(0, 1.3, 0), color = rgb(190, 110, 255), parent = folder, material = M.Neon, decor = true })
+	end
+	for _, spot in { { -10, -16 }, { 10, -16 }, { -10, 4 }, { 10, 4 } } do
+		Props.candelabra(folder, facingCf(spot[1], TOP, spot[2], 0, 1), true)
+	end
+
+	-- DoorDash-red delivery van parked west of spawn, side facing the spawn.
+	Props.van(folder, facingCf(-24, TOP, -18, 0, 1))
+	Props.lampPost(folder, facingCf(-16, TOP, -32, 0, 1), RED)
+
+	-- Graveyard corner (south-east): tombstones with goofy epitaphs.
+	local epitaphs = { "RIP my feet", "BRB delivering", "Here lies my ankles", "Out for delivery", "Tip your driver", "Scrum-diddly" }
+	local index = 0
+	for row = 0, 1 do
+		for col = 0, 2 do
+			index += 1
+			Props.tombstone(folder, facingCf(20 + col * 7, TOP, -36 - row * 8, 0, 1), epitaphs[index])
+		end
+	end
+	Props.deadTree(folder, facingCf(39, TOP, -48, 0, 1), 16)
+	Props.lampPost(folder, facingCf(16, TOP, -32, 0, 1), rgb(90, 255, 150))
+
+	-- Crypt corner (south-west): coffins and a candelabra.
+	Props.coffin(folder, facingCf(-36, TOP, -44, 0, 1), false)
+	Props.coffin(folder, facingCf(-30, TOP, -44, 0, 1), true)
+	Props.coffin(folder, facingCf(-24, TOP, -46, 0, 1), false)
+	Props.candelabra(folder, facingCf(-38, TOP, -36, 0, 1), false)
+
+	-- Dead trees in the north corners.
+	Props.deadTree(folder, facingCf(-40, TOP, 50, 0, 1), 18)
+	Props.deadTree(folder, facingCf(40, TOP, 50, 0, 1), 15)
+
+	-- East side: rugby goal posts frame the Stage 2 exit.
+	Props.goalPosts(folder, facingCf(halfX - 2, TOP, 0, 1, 0), 18, rgb(60, 200, 120))
+	Props.lampPost(folder, facingCf(34, TOP, -8, -1, 0), rgb(90, 255, 150))
+	Props.lampPost(folder, facingCf(34, TOP, 8, -1, 0), rgb(90, 255, 150))
+
+	-- South side: the manor gate the Stage 3 path runs through.
+	local gate = Props.manorGate(folder, facingCf(0, TOP, -halfZ + 3, 0, 1), 20)
+	local lintel = gate:FindFirstChild("Lintel")
+	if lintel and lintel:IsA("BasePart") then
+		Parts.decal(lintel, Enum.NormalId.Front, "COUNT CRACKULA'S MANOR", rgb(255, 90, 110))
+	end
+
+	-- West: porch sign over the walkway.
+	local porchPos = Vector3.new(-halfX + 2, TOP + 9, 0)
+	for _, z in { -8.6, 8.6 } do
+		Parts.block({ name = "PorchArchPost", size = Vector3.new(0.8, 11, 0.8), position = Vector3.new(porchPos.X, TOP + 5.5, z), color = rgb(28, 26, 34), parent = folder, material = M.Metal })
+	end
+	Parts.sign({
+		name = "SignPorch",
+		parent = folder,
+		cframe = CFrame.lookAt(porchPos, porchPos + Vector3.new(1, 0, 0)),
+		width = 16,
+		height = 3.6,
+		title = "YOUR PORCH",
+		subtitle = "Bench 50 · Ice Bath 100 · Bag Shrine 150 · Crypt Key",
+		ink = rgb(255, 180, 90),
+		glow = rgb(255, 120, 40),
+	})
+end
+
+local function buildEntrance(spec: CourseLayout.CourseSpec, folder: Instance)
+	local approach = CourseLayout.Approach(spec)
+	local path = placeAabb(spec.id .. "_Approach", approach, PATH, folder, M.Pavement)
+	path:SetAttribute("CourseId", spec.id)
+	path:SetAttribute("Role", "approach")
+	foundation(spec.id .. "_ApproachPier", approach, rgb(44, 38, 52), folder, M.Rock)
+
+	local sign = CourseLayout.EntranceSign(spec)
+	local signPos = Vector3.new(sign.x, sign.y, sign.z)
+	local signCf = CFrame.lookAt(signPos, signPos + Vector3.new(sign.faceX, 0, sign.faceZ))
+	local accent = Parts.rgb(spec.palette.accent)
+	-- North and porch exits get their own posts; east uses the goal posts, south the manor gate.
+	if spec.heading == "north" then
+		for _, side in { -1, 1 } do
+			local postPos = signPos + signCf.RightVector * (side * (sign.width / 2 + 0.6))
+			Parts.block({ name = "ArchPost", size = Vector3.new(1, sign.y - TOP + 3, 1), position = Vector3.new(postPos.X, TOP + (sign.y - TOP + 3) / 2, postPos.Z), color = rgb(28, 26, 34), parent = folder, material = M.Metal })
+			Parts.block({ name = "ArchFinial", size = Vector3.new(1.6, 1.6, 1.6), position = Vector3.new(postPos.X, sign.y + 3.8, postPos.Z), color = accent, parent = folder, material = M.Neon, shape = Enum.PartType.Ball, decor = true })
+		end
+	end
+	local subtitle = "+" .. tostring(spec.payout) .. " cash · " .. tostring(CourseLayout.ObstacleCount(spec)) .. " obstacles"
+	if spec.requiredTier > 0 then
+		subtitle ..= " · " .. spec.lockHint
+	else
+		subtitle ..= " · " .. spec.tagline
+	end
+	Parts.sign({
+		name = "Sign_" .. spec.id,
+		parent = folder,
+		cframe = signCf,
+		width = sign.width,
+		height = sign.height,
+		title = string.upper(spec.displayName),
+		subtitle = subtitle,
+		ink = accent,
+		glow = Parts.rgb(spec.palette.kill):Lerp(Color3.new(0, 0, 0), 0.4),
+		backText = "BACK TO THE MANOR",
+	})
+end
+
+local function buildCourse(spec: CourseLayout.CourseSpec, folder: Instance): CourseParts
+	local courseFolder = Instance.new("Folder")
+	courseFolder.Name = "Course_" .. spec.id
+	courseFolder.Parent = folder
+
+	local record: CourseParts = {
+		id = spec.id,
+		displayName = spec.displayName,
+		payout = spec.payout,
+		requiredTier = spec.requiredTier,
+		lockHint = spec.lockHint,
+		startPart = nil :: any,
+		checkpointPart = nil :: any,
+		checkpointParts = {},
+		finishPart = nil :: any,
+		gate = nil,
+	}
+	local platforms = CourseLayout.Platforms(spec)
+	for _, platform in platforms do
+		local part = Obstacles.Build(spec, platform, courseFolder)
+		if platform.role == "start" then
+			record.startPart = part
+		elseif platform.role == "checkpoint" then
+			table.insert(record.checkpointParts, part)
+		elseif platform.role == "finish" then
+			record.finishPart = part
+		end
+	end
+	record.checkpointPart = record.checkpointParts[1]
+	Obstacles.KillFloor(spec, courseFolder)
+
+	if spec.requiredTier > 0 then
+		local first = platforms[1]
+		local hd = CourseLayout.Heading(spec)
+		local facing = Vector3.new(hd.fx, 0, hd.fz)
+		local x, z = CourseLayout.ToWorld(spec, first.forward - first.depth / 2 - 1, first.lat)
+		local pos = Vector3.new(x, TOP + 7, z)
+		local gate = Parts.block({
+			name = spec.id .. "_Gate",
+			size = Vector3.new(first.width + 4, 14, 1),
+			cframe = CFrame.lookAt(pos, pos + facing),
+			color = Parts.rgb(spec.palette.accent),
+			parent = courseFolder,
+			material = M.ForceField,
+			transparency = 0.2,
+			canCollide = false,
+		})
+		gate:SetAttribute("CourseId", spec.id)
+		gate:SetAttribute("Role", "gate")
+		gate.CastShadow = false
+		record.gate = gate
+	end
+
+	-- A few themed props along the outside of each course, on the ground.
+	local rng = Random.new(#spec.id * 97 + spec.payout)
+	local hd = CourseLayout.Heading(spec)
+	local last = platforms[#platforms]
+	for forward = 20, last.forward, 22 do
+		for _, side in { -1, 1 } do
+			local lat = side * rng:NextNumber(26, 34)
+			local x, z = CourseLayout.ToWorld(spec, forward + rng:NextNumber(-4, 4), lat)
+			local cf = facingCf(x, CourseLayout.GROUND_TOP, z, -hd.rx * side, -hd.rz * side)
+			if spec.id == "suburbs" then
+				if rng:NextNumber() < 0.5 then
+					Props.jackOLantern(courseFolder, cf, 1.6)
+				else
+					Props.deadTree(courseFolder, cf, rng:NextNumber(12, 20))
+				end
+			elseif spec.id == "stage2" then
+				if rng:NextNumber() < 0.6 then
+					Props.tombstone(courseFolder, cf, nil, rng:NextNumber(3, 5))
+				else
+					Props.coffin(courseFolder, cf, true)
+				end
+			elseif rng:NextNumber() < 0.5 then
+				Props.coffin(courseFolder, cf, true)
+			else
+				Props.deadTree(courseFolder, cf, rng:NextNumber(14, 24))
+			end
+		end
+	end
+	return record
+end
+
+local function scatter(folder: Instance)
+	local rng = Random.new(1337)
+	local keepOut: { CourseLayout.Aabb } = {}
+	local lobby = CourseLayout.Lobby()
+	table.insert(keepOut, { x = lobby.x, z = lobby.z, sx = lobby.sx + 10, sz = lobby.sz + 10 })
+	local deck = CourseLayout.PorchDeck()
+	table.insert(keepOut, { x = deck.x, z = deck.z, sx = deck.sx + 10, sz = deck.sz + 10 })
+	for _, spec in CourseLayout.All() do
+		table.insert(keepOut, CourseLayout.CourseBounds(spec, 14))
+	end
+	local placed = 0
+	local tries = 0
+	while placed < 70 and tries < 600 do
+		tries += 1
+		local x = rng:NextNumber(-170, 170)
+		local z = rng:NextNumber(-170, 170)
+		local blocked = false
+		for _, box in keepOut do
+			if CourseLayout.Contains(box, x, z, 2) then
+				blocked = true
+				break
+			end
+		end
+		if not blocked then
+			placed += 1
+			local cf = CFrame.new(x, CourseLayout.GROUND_TOP, z) * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
+			local roll = rng:NextNumber()
+			if roll < 0.4 then
+				Props.tombstone(folder, cf, nil, rng:NextNumber(2.6, 4.2))
+			elseif roll < 0.75 then
+				Props.deadTree(folder, cf, rng:NextNumber(12, 22))
+			elseif roll < 0.9 then
+				Props.jackOLantern(folder, cf, rng:NextNumber(1, 2))
+			else
+				Props.coffin(folder, cf, rng:NextNumber() < 0.5)
+			end
+		end
+	end
+end
+
+local function buildSky(folder: Instance)
+	Props.moon(folder, Vector3.new(-170, 190, 360), 64)
+	local bats = Instance.new("Folder")
+	bats.Name = "Bats"
+	bats.Parent = folder
+	local rng = Random.new(42)
+	local centers = {
+		Vector3.new(0, TOP + 34, 10),
+		Vector3.new(0, TOP + 40, 150),
+		Vector3.new(150, TOP + 40, 0),
+		Vector3.new(0, TOP + 40, -150),
+		Vector3.new(-24, TOP + 30, 36),
+	}
+	for i = 1, 14 do
+		local center = centers[(i - 1) % #centers + 1]
+		local bat = Props.bat(bats, CFrame.new(center + Vector3.new(rng:NextNumber(-10, 10), rng:NextNumber(-4, 4), rng:NextNumber(-10, 10))))
+		bat:SetAttribute("Center", center)
+		bat:SetAttribute("Radius", rng:NextNumber(10, 26))
+		bat:SetAttribute("Speed", rng:NextNumber(0.5, 1.1) * (if rng:NextNumber() < 0.5 then -1 else 1))
+		bat:SetAttribute("Phase", rng:NextNumber(0, math.pi * 2))
+		bat:SetAttribute("Bob", rng:NextNumber(1, 3))
+	end
+end
+
+function World.Build(): {
+	folder: Folder,
+	courses: { CourseParts },
+	spawn: SpawnLocation,
+	spawnCFrame: CFrame,
+}
+	local folder = Instance.new("Folder")
+	folder.Name = "CountCrackulaMap"
+	folder.Parent = workspace
+
+	local groundPart = Parts.block({
+		name = "GraveyardGround",
+		size = Vector3.new(1200, 2, 1200),
+		position = Vector3.new(0, CourseLayout.GROUND_TOP - 1, 60),
+		color = rgb(34, 44, 38),
+		parent = folder,
+		material = M.Grass,
+	})
+	groundPart:SetAttribute("Role", "rescue")
+
+	buildLobby(folder)
+
+	local courses: { CourseParts } = {}
+	for _, spec in CourseLayout.All() do
+		buildEntrance(spec, folder)
+		table.insert(courses, buildCourse(spec, folder))
+	end
+
+	scatter(folder)
+	buildSky(folder)
+
+	local voidKill = Parts.block({
+		name = "VoidKill",
+		size = Vector3.new(2400, 2, 2400),
+		position = Vector3.new(0, -30, 80),
+		color = rgb(20, 10, 20),
+		parent = folder,
+		transparency = 1,
+	})
+	voidKill:SetAttribute("Role", "kill")
+
+	local spawnX, spawnZ = CourseLayout.SpawnPoint()
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "LobbySpawn"
+	spawn.Anchored = true
+	spawn.Neutral = true
+	spawn.Enabled = true
+	spawn.Duration = 0
+	spawn.Size = Vector3.new(8, 1, 8)
+	spawn.Color = rgb(140, 60, 220)
+	spawn.Material = M.Neon
+	spawn.Transparency = 0.15
+	spawn.TopSurface = Enum.SurfaceType.Smooth
+	spawn.BottomSurface = Enum.SurfaceType.Smooth
+	local spawnPos = Vector3.new(spawnX, TOP + 0.5, spawnZ)
+	spawn.CFrame = CFrame.lookAt(spawnPos, spawnPos + Vector3.new(0, 0, 10))
+	spawn:SetAttribute("Facing", Vector3.new(0, 0, 1))
+	spawn.Parent = workspace
+
+	return {
+		folder = folder,
+		courses = courses,
+		spawn = spawn,
+		spawnCFrame = Parts.standCFrame(spawn),
+	}
+end
+
+local function killHumanoid(hit: BasePart)
+	local player = Parts.playerFromHit(hit)
+	if not player or not player.Character then
+		return
+	end
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health > 0 then
+		humanoid.Health = 0
+	end
+end
+
+function World.HookKills(folder: Instance)
+	local function hook(part: Instance)
+		if not part:IsA("BasePart") or part:GetAttribute("Role") ~= "kill" then
+			return
+		end
+		part.Touched:Connect(killHumanoid)
+	end
+	for _, child in folder:GetDescendants() do
+		hook(child)
+	end
+end
+
+-- The ground under everything sends a fallen player back (checkpoint or spawn)
+-- without a death, so stepping off the plaza is not a punishment.
+function World.HookRescue(folder: Instance, rescue: (Player) -> ())
+	local last: { [number]: number } = {}
+	for _, part in folder:GetDescendants() do
+		if part:IsA("BasePart") and part:GetAttribute("Role") == "rescue" then
+			part.Touched:Connect(function(hit)
+				local player = Parts.playerFromHit(hit)
+				if not player then
+					return
+				end
+				local now = os.clock()
+				if now - (last[player.UserId] or 0) < 1 then
+					return
+				end
+				last[player.UserId] = now
+				rescue(player)
+			end)
+		end
+	end
+end
+
+return World
+]]></string>
+        </Properties>
+        <Item class="ModuleScript" referent="35">
+          <Properties>
+            <string name="Name">Obstacles</string>
+            <string name="Source"><![CDATA[--!strict
+-- Builds one CourseLayout platform as Parts and wires its behaviour:
+--   mover    anchored part tweened by TweenService; a Heartbeat loop copies the
+--            tween's speed into AssemblyLinearVelocity so riders are carried.
+--   spinner  anchored hub + kill bar on a motorised HingeConstraint.
+--   vanish   fades and goes non-solid when stepped on, then comes back.
+--   conveyor anchored part with a constant sideways AssemblyLinearVelocity.
+--   hurdles  thin neon kill strips across the platform to hop over.
+--   ledge    small step with a tall wall on its outer side (wall-climb look).
+
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
+local Parts = require(script.Parent.Parent.Parts)
+local Props = require(script.Parent.Props)
+
+local Obstacles = {}
+
+local rgb = Color3.fromRGB
+local M = Enum.Material
+local UP = Vector3.new(0, 1, 0)
+
+type Frame = {
+	center: Vector3,
+	facing: Vector3,
+	right: Vector3,
+	rot: CFrame,
+}
+
+local movers: { { part: BasePart, last: Vector3 } } = {}
+local motionStarted = false
+
+local function frameOf(spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform): Frame
+	local hd = CourseLayout.Heading(spec)
+	local facing = Vector3.new(hd.fx, 0, hd.fz)
+	local right = Vector3.new(hd.rx, 0, hd.rz)
+	return {
+		center = Vector3.new(platform.x, platform.yCenter, platform.z),
+		facing = facing,
+		right = right,
+		rot = CFrame.lookAt(Vector3.zero, facing),
+	}
+end
+
+local function at(frame: Frame, f: number, l: number, y: number): CFrame
+	return CFrame.new(frame.center + frame.facing * f + frame.right * l + UP * y) * frame.rot
+end
+
+local function lookMaterial(look: string, fallback: Enum.Material): Enum.Material
+	if look == "lawn" or look == "pitch" or look == "sprinkler" then
+		return M.Grass
+	elseif look == "porch" or look == "fence" then
+		return M.WoodPlanks
+	elseif look == "box" then
+		return Parts.material("Cardboard", M.WoodPlanks)
+	elseif look == "sidewalk" or look == "drone" then
+		return M.Concrete
+	elseif look == "roof" then
+		return Parts.material("RoofShingles", M.Slate)
+	elseif look == "tombstone" or look == "tombwall" or look == "tacklebar" then
+		return M.Slate
+	elseif look == "coffin" then
+		return M.Wood
+	elseif look == "crossbar" then
+		return M.SmoothPlastic
+	elseif look == "ghost" then
+		return M.Glass
+	elseif look == "scrum" then
+		return M.Fabric
+	elseif look == "rugbyball" then
+		return Parts.material("Leather", M.Fabric)
+	elseif look == "crypt" or look == "candle" or look == "candelabra" then
+		return M.Cobblestone
+	elseif look == "chain" then
+		return M.DiamondPlate
+	elseif look == "cracked" then
+		return M.Slate
+	elseif look == "brick" then
+		return M.Brick
+	elseif look == "lavabelt" then
+		return M.Basalt
+	elseif look == "sarcophagus" then
+		return M.Marble
+	end
+	return fallback
+end
+
+local function lookColor(look: string, palette: CourseLayout.Palette): Color3
+	if look == "porch" then
+		return rgb(110, 74, 52)
+	elseif look == "fence" or look == "crossbar" then
+		return Parts.rgb(palette.trim)
+	elseif look == "pumpkin" then
+		return rgb(255, 128, 28)
+	elseif look == "box" then
+		return rgb(176, 132, 88)
+	elseif look == "sidewalk" or look == "drone" then
+		return rgb(120, 118, 128)
+	elseif look == "roof" then
+		return rgb(66, 44, 74)
+	elseif look == "coffin" then
+		return rgb(86, 50, 40)
+	elseif look == "ghost" then
+		return rgb(220, 240, 255)
+	elseif look == "scrum" then
+		return rgb(40, 90, 60)
+	elseif look == "rugbyball" then
+		return rgb(150, 86, 44)
+	elseif look == "chain" then
+		return rgb(90, 88, 100)
+	elseif look == "cracked" then
+		return rgb(96, 70, 70)
+	elseif look == "brick" then
+		return rgb(100, 52, 52)
+	elseif look == "sarcophagus" then
+		return rgb(196, 178, 140)
+	elseif look == "lavabelt" then
+		return rgb(52, 44, 46)
+	end
+	return Parts.rgb(palette.base)
+end
+
+local function tag(part: BasePart, spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform, frame: Frame)
+	part:SetAttribute("CourseId", spec.id)
+	part:SetAttribute("Role", platform.role)
+	part:SetAttribute("Kind", platform.kind)
+	part:SetAttribute("Index", platform.index)
+	part:SetAttribute("Facing", frame.facing)
+	if platform.role == "checkpoint" then
+		part:SetAttribute("CheckpointNumber", platform.checkpointNumber)
+	end
+end
+
+-- Decor that rides along with a moving root.
+local function weldDecor(root: BasePart, decor: BasePart)
+	decor.Anchored = false
+	decor.Massless = true
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = root
+	weld.Part1 = decor
+	weld.Parent = decor
+end
+
+local function rim(main: BasePart, frame: Frame, platform: CourseLayout.Platform, color: Color3, parent: Instance)
+	local half = platform.thickness / 2
+	local w, d = platform.width, platform.depth
+	for _, edge in
+		{
+			{ 0, d / 2, w + 0.4, 0.4 },
+			{ 0, -d / 2, w + 0.4, 0.4 },
+			{ w / 2, 0, 0.4, d },
+			{ -w / 2, 0, 0.4, d },
+		}
+	do
+		local strip = Parts.block({
+			name = "Rim",
+			size = Vector3.new(edge[3], 0.5, edge[4]),
+			cframe = at(frame, edge[2], edge[1], half - 0.2),
+			color = color,
+			parent = parent,
+			material = M.Neon,
+			decor = true,
+		})
+		if platform.move then
+			weldDecor(main, strip)
+		end
+	end
+end
+
+local function pillar(frame: Frame, platform: CourseLayout.Platform, size: number, color: Color3, material: Enum.Material, parent: Instance)
+	local bottom = CourseLayout.GROUND_TOP
+	local top = platform.yTop - platform.thickness
+	local height = top - bottom
+	if height < 1 then
+		return
+	end
+	Parts.block({
+		name = "Pillar",
+		size = Vector3.new(size, height, size),
+		cframe = CFrame.new(Vector3.new(platform.x, bottom + height / 2, platform.z)) * frame.rot,
+		color = color,
+		parent = parent,
+		material = material,
+		decor = true,
+	})
+end
+
+local function startMotion()
+	if motionStarted then
+		return
+	end
+	motionStarted = true
+	RunService.Heartbeat:Connect(function(dt)
+		if dt <= 0 then
+			return
+		end
+		for _, entry in movers do
+			local part = entry.part
+			if part.Parent then
+				local position = part.Position
+				part.AssemblyLinearVelocity = (position - entry.last) / dt
+				entry.last = position
+			end
+		end
+	end)
+end
+
+local function makeMover(main: BasePart, frame: Frame, move: CourseLayout.Move)
+	local axis = if move.axis == "f" then frame.facing elseif move.axis == "y" then UP else frame.right
+	local base = main.CFrame
+	local offset = axis * move.amp
+	main.CFrame = base - offset
+	local info = TweenInfo.new(move.period / 2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	local ok, err = pcall(function()
+		TweenService:Create(main, info, { CFrame = base + offset }):Play()
+	end)
+	if not ok then
+		warn("[CountCrackula] mover tween failed: " .. tostring(err))
+		main.CFrame = base
+		return
+	end
+	table.insert(movers, { part = main, last = main.Position })
+	startMotion()
+end
+
+local function makeSpinner(
+	spec: CourseLayout.CourseSpec,
+	platform: CourseLayout.Platform,
+	frame: Frame,
+	parent: Instance,
+	color: Color3
+)
+	local barHeight = 2.4
+	local hubHeight = barHeight + 0.5
+	local hub = Parts.block({
+		name = "SpinnerHub",
+		size = Vector3.new(hubHeight, 1.6, 1.6),
+		cframe = CFrame.new(Vector3.new(platform.x, platform.yTop + hubHeight / 2, platform.z))
+			* CFrame.Angles(0, 0, math.rad(90)),
+		color = rgb(40, 34, 46),
+		parent = parent,
+		material = M.Metal,
+		shape = Enum.PartType.Cylinder,
+	})
+	local barLength = platform.width - 2
+	local barCf = CFrame.new(Vector3.new(platform.x, platform.yTop + barHeight, platform.z)) * frame.rot
+	local bar = Instance.new("Part")
+	bar.Name = "SpinnerBar"
+	bar.Size = Vector3.new(barLength, 1, 1)
+	bar.CFrame = barCf
+	bar.Color = color
+	bar.Material = M.Neon
+	bar.Anchored = false
+	bar.CanCollide = false
+	bar.CanTouch = true
+	bar.CastShadow = false
+	bar.TopSurface = Enum.SurfaceType.Smooth
+	bar.BottomSurface = Enum.SurfaceType.Smooth
+	bar:SetAttribute("Role", "kill")
+	bar:SetAttribute("CourseId", spec.id)
+
+	-- Attachment primary axis is +X; tilt it so the hinge turns about world up.
+	local a0 = Instance.new("Attachment")
+	a0.Name = "HingeBase"
+	a0.Parent = hub
+	local axisCf = CFrame.new(barCf.Position) * CFrame.Angles(0, 0, math.rad(90))
+	a0.CFrame = hub.CFrame:ToObjectSpace(axisCf)
+	local a1 = Instance.new("Attachment")
+	a1.Name = "HingeBar"
+	a1.Parent = bar
+	a1.CFrame = barCf:ToObjectSpace(axisCf)
+	local hinge = Instance.new("HingeConstraint")
+	hinge.Attachment0 = a0
+	hinge.Attachment1 = a1
+	hinge.ActuatorType = Enum.ActuatorType.Motor
+	hinge.AngularVelocity = platform.spin or 2
+	hinge.MotorMaxTorque = 1e8
+	hinge.MotorMaxAcceleration = 50
+	hinge.Parent = bar
+	bar.Parent = parent
+	pcall(function()
+		bar:SetNetworkOwner(nil)
+	end)
+	-- Tip caps so the bar ends read clearly.
+	for _, side in { -1, 1 } do
+		local cap = Parts.block({
+			name = "BarCap",
+			size = Vector3.new(1.3, 1.3, 1.3),
+			cframe = barCf * CFrame.new(side * barLength / 2, 0, 0),
+			color = rgb(255, 255, 255),
+			parent = parent,
+			material = M.Neon,
+			shape = Enum.PartType.Ball,
+			decor = true,
+		})
+		weldDecor(bar, cap)
+	end
+end
+
+local function makeVanish(main: BasePart, parent: Instance)
+	local busy = false
+	local originalTransparency = main.Transparency
+	local originalColor = main.Color
+	main.Touched:Connect(function(hit)
+		if busy or not Parts.playerFromHit(hit) then
+			return
+		end
+		busy = true
+		main.Color = rgb(255, 80, 90)
+		local fade = TweenService:Create(main, TweenInfo.new(0.7, Enum.EasingStyle.Quad), { Transparency = 0.85 })
+		fade:Play()
+		task.delay(0.75, function()
+			main.CanCollide = false
+			for _, child in parent:GetChildren() do
+				if child:IsA("BasePart") and child ~= main and child:GetAttribute("FadeWith") == main.Name then
+					child.Transparency = 1
+				end
+			end
+			task.delay(2.6, function()
+				main.CanCollide = true
+				main.Transparency = originalTransparency
+				main.Color = originalColor
+				for _, child in parent:GetChildren() do
+					if child:IsA("BasePart") and child:GetAttribute("FadeWith") == main.Name then
+						child.Transparency = 0
+					end
+				end
+				busy = false
+			end)
+		end)
+	end)
+end
+
+local function makeHurdles(platform: CourseLayout.Platform, frame: Frame, parent: Instance, color: Color3, spec: CourseLayout.CourseSpec)
+	-- First strip sits 7 studs in: a max-length jump (8.7 studs minus the gap)
+	-- can never land on it. Then one every 5 studs, leaving room to exit.
+	local f = -platform.depth / 2 + 7
+	while f <= platform.depth / 2 - 3.5 do
+		local strip = Parts.block({
+			name = "KillStrip",
+			size = Vector3.new(platform.width, 0.7, 1.4),
+			cframe = at(frame, f, 0, platform.thickness / 2 + 0.35),
+			color = color,
+			parent = parent,
+			material = M.Neon,
+			canCollide = false,
+		})
+		strip:SetAttribute("Role", "kill")
+		strip:SetAttribute("CourseId", spec.id)
+		f += 5
+	end
+end
+
+local function makeConveyor(main: BasePart, platform: CourseLayout.Platform, frame: Frame, parent: Instance, color: Color3)
+	local push = platform.push or 6
+	main.AssemblyLinearVelocity = frame.right * push
+	-- Chevrons point the way the belt pushes.
+	for f = -platform.depth / 2 + 2, platform.depth / 2 - 2, 3 do
+		for _, side in { -1, 1 } do
+			local chevron = Parts.block({
+				name = "Arrow",
+				size = Vector3.new(0.4, 0.12, 2),
+				cframe = at(frame, f, 0, platform.thickness / 2 + 0.02)
+					* CFrame.Angles(0, math.rad(side * 40), 0),
+				color = color,
+				parent = parent,
+				material = M.Neon,
+				decor = true,
+			})
+			chevron.CFrame = chevron.CFrame + frame.facing * (side * 0.6)
+		end
+	end
+end
+
+local function decorate(spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform, frame: Frame, main: Part, parent: Instance)
+	local look = platform.look
+	local palette = spec.palette
+	local accent = Parts.rgb(palette.accent)
+	local top = platform.thickness / 2
+	if look == "pumpkin" then
+		-- Turn the pad into a pumpkin top: a disc with a stem and a smile on its side.
+		main.Shape = Enum.PartType.Cylinder
+		main.Size = Vector3.new(platform.thickness, platform.depth, platform.width)
+		main.CFrame = main.CFrame * CFrame.Angles(0, 0, math.rad(90))
+		local stem = Parts.block({
+			name = "Stem",
+			size = Vector3.new(0.6, 1, 0.6),
+			cframe = at(frame, 0, 0, top + 0.5),
+			color = rgb(70, 110, 40),
+			parent = parent,
+			material = M.Wood,
+			decor = true,
+		})
+		stem.CanCollide = false
+		local face = Parts.block({
+			name = "Smile",
+			size = Vector3.new(2.4, 0.4, 0.2),
+			cframe = at(frame, -platform.depth / 2 - 0.05, 0, -0.2),
+			color = rgb(255, 210, 90),
+			parent = parent,
+			material = M.Neon,
+			decor = true,
+		})
+		face.CanCollide = false
+		pillar(frame, platform, 1.2, rgb(60, 90, 40), M.Wood, parent)
+	elseif look == "tombstone" or look == "candle" then
+		pillar(frame, platform, math.min(platform.width, platform.depth) - 0.4, main.Color:Lerp(Color3.new(0, 0, 0), 0.25), M.Slate, parent)
+		if look == "candle" then
+			for _, corner in { { 1, 1 }, { -1, -1 } } do
+				local flame = Parts.block({
+					name = "Flame",
+					size = Vector3.new(0.4, 0.7, 0.4),
+					cframe = at(frame, corner[1] * (platform.depth / 2 - 0.6), corner[2] * (platform.width / 2 - 0.6), top + 0.9),
+					color = rgb(255, 190, 90),
+					parent = parent,
+					material = M.Neon,
+					decor = true,
+				})
+				flame:SetAttribute("Flicker", true)
+			end
+		else
+			Parts.decal(main, Enum.NormalId.Front, "RIP", rgb(40, 34, 50))
+			Parts.decal(main, Enum.NormalId.Back, "RIP", rgb(40, 34, 50))
+		end
+	elseif look == "coffin" then
+		local trim = Parts.block({
+			name = "Trim",
+			size = Vector3.new(platform.width + 0.2, 0.3, 0.6),
+			cframe = at(frame, platform.depth * 0.25, 0, top - 0.1),
+			color = Parts.rgb(palette.trim),
+			parent = parent,
+			material = M.Neon,
+			decor = true,
+		})
+		if platform.move then
+			weldDecor(main, trim)
+		end
+	elseif look == "drone" then
+		for _, corner in { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } } do
+			local prop = Parts.block({
+				name = "Propeller",
+				size = Vector3.new(0.3, 2.4, 2.4),
+				cframe = at(frame, corner[1] * platform.depth / 2, corner[2] * platform.width / 2, -0.6)
+					* CFrame.Angles(0, 0, math.rad(90)),
+				color = accent,
+				parent = parent,
+				material = M.Neon,
+				shape = Enum.PartType.Cylinder,
+				decor = true,
+			})
+			weldDecor(main, prop)
+		end
+	elseif look == "fence" then
+		for f = -platform.depth / 2 + 1, platform.depth / 2 - 1, 2 do
+			for _, side in { -1, 1 } do
+				Parts.block({
+					name = "Picket",
+					size = Vector3.new(0.3, 3, 0.5),
+					cframe = at(frame, f, side * 1.3, -1),
+					color = Parts.rgb(palette.trim),
+					parent = parent,
+					material = M.Wood,
+					decor = true,
+				})
+			end
+		end
+	elseif look == "crossbar" then
+		for _, f in { -platform.depth / 2, platform.depth / 2 } do
+			Parts.block({
+				name = "GoalPost",
+				size = Vector3.new(0.8, 18, 0.8),
+				cframe = at(frame, f, 0, -6),
+				color = Parts.rgb(palette.trim),
+				parent = parent,
+				material = M.SmoothPlastic,
+				decor = true,
+			})
+		end
+	elseif look == "chain" then
+		for f = -platform.depth / 2 + 1, platform.depth / 2 - 1, 2 do
+			Parts.block({
+				name = "Link",
+				size = Vector3.new(0.2, 1, 1.4),
+				cframe = at(frame, f, 0, -1.4),
+				color = rgb(60, 58, 70),
+				parent = parent,
+				material = M.Metal,
+				decor = true,
+			})
+		end
+	elseif look == "ghost" then
+		main.Transparency = 0.25
+		for _, side in { -0.8, 0.8 } do
+			local eye = Parts.block({
+				name = "GhostEye",
+				size = Vector3.new(0.6, 0.6, 0.1),
+				cframe = at(frame, -platform.depth / 2 - 0.05, side, 0),
+				color = rgb(20, 20, 30),
+				parent = parent,
+				material = M.SmoothPlastic,
+				decor = true,
+			})
+			eye:SetAttribute("FadeWith", main.Name)
+		end
+	elseif look == "cracked" or look == "box" then
+		local crack = Parts.block({
+			name = "Crack",
+			size = Vector3.new(0.3, 0.1, platform.depth * 0.8),
+			cframe = at(frame, 0, 0, top + 0.02) * CFrame.Angles(0, math.rad(35), 0),
+			color = if look == "cracked" then rgb(255, 90, 40) else rgb(120, 86, 56),
+			parent = parent,
+			material = if look == "cracked" then M.Neon else M.SmoothPlastic,
+			decor = true,
+		})
+		crack:SetAttribute("FadeWith", main.Name)
+	elseif look == "sarcophagus" then
+		local lid = Parts.block({
+			name = "Lid",
+			size = Vector3.new(platform.width - 1, 0.4, platform.depth - 1),
+			cframe = at(frame, 0, 0, -top - 0.4),
+			color = rgb(255, 200, 70),
+			parent = parent,
+			material = M.Neon,
+			decor = true,
+		})
+		weldDecor(main, lid)
+	elseif look == "pitch" and platform.role == "jump" then
+		for f = -platform.depth / 2 + 2, platform.depth / 2 - 2, 4 do
+			Parts.block({
+				name = "PitchLine",
+				size = Vector3.new(platform.width, 0.06, 0.3),
+				cframe = at(frame, f, 0, top + 0.03),
+				color = rgb(240, 240, 240),
+				parent = parent,
+				material = M.SmoothPlastic,
+				decor = true,
+			})
+		end
+	end
+end
+
+local function checkpointDecor(spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform, frame: Frame, main: BasePart, parent: Instance)
+	local color = Parts.rgb(spec.palette.checkpoint)
+	rim(main, frame, platform, color, parent)
+	Parts.decal(main, Enum.NormalId.Top, "CHECKPOINT " .. tostring(platform.checkpointNumber), color)
+	-- A small lantern on a post at one corner, out of the jump line.
+	local postCf = at(frame, platform.depth / 2 - 1, platform.width / 2 - 1, platform.thickness / 2)
+	Parts.block({
+		name = "LanternPost",
+		size = Vector3.new(0.4, 5, 0.4),
+		cframe = postCf * CFrame.new(0, 2.5, 0),
+		color = rgb(28, 26, 34),
+		parent = parent,
+		material = M.Metal,
+		decor = true,
+	})
+	local lantern = Parts.block({
+		name = "Lantern",
+		size = Vector3.new(1, 1.3, 1),
+		cframe = postCf * CFrame.new(0, 5.4, 0),
+		color = color,
+		parent = parent,
+		material = M.Neon,
+		decor = true,
+	})
+	Parts.light(lantern, color, 18, 1.4)
+end
+
+local function finishDecor(spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform, frame: Frame, main: BasePart, parent: Instance)
+	local color = Parts.rgb(spec.palette.finish)
+	rim(main, frame, platform, color, parent)
+	local half = platform.width / 2
+	local archFront = platform.depth / 2 - 1.5
+	for _, side in { -1, 1 } do
+		Parts.block({
+			name = "ArchPost",
+			size = Vector3.new(1.2, 12, 1.2),
+			cframe = at(frame, archFront, side * (half - 0.8), platform.thickness / 2 + 6),
+			color = rgb(30, 24, 36),
+			parent = parent,
+			material = M.Metal,
+		})
+		local orb = Parts.block({
+			name = "ArchOrb",
+			size = Vector3.new(1.6, 1.6, 1.6),
+			cframe = at(frame, archFront, side * (half - 0.8), platform.thickness / 2 + 12.6),
+			color = color,
+			parent = parent,
+			material = M.Neon,
+			shape = Enum.PartType.Ball,
+			decor = true,
+		})
+		if side > 0 then
+			Parts.light(orb, color, 24, 2)
+		end
+	end
+	-- Banner faces back down the course, toward the runner.
+	local bannerCf = CFrame.new((at(frame, archFront, 0, platform.thickness / 2 + 10)).Position)
+		* CFrame.lookAt(Vector3.zero, -frame.facing)
+	Parts.sign({
+		name = "FinishBanner",
+		parent = parent,
+		cframe = bannerCf,
+		width = platform.width - 2.4,
+		height = 3.4,
+		title = "FINISH",
+		subtitle = "+" .. tostring(spec.payout) .. " cash",
+		ink = color,
+		glow = rgb(40, 0, 50),
+		board = rgb(24, 18, 30),
+	})
+	Parts.decal(main, Enum.NormalId.Top, "DELIVERED!", color)
+end
+
+function Obstacles.Build(spec: CourseLayout.CourseSpec, platform: CourseLayout.Platform, parent: Instance): BasePart
+	local frame = frameOf(spec, platform)
+	local palette = spec.palette
+	local color = lookColor(platform.look, palette)
+	local material = lookMaterial(platform.look, M.Slate)
+	if platform.role == "checkpoint" then
+		color = Parts.rgb(palette.base):Lerp(Parts.rgb(palette.checkpoint), 0.35)
+	elseif platform.role == "finish" then
+		color = Parts.rgb(palette.finish)
+		material = M.Neon
+	end
+	local main = Parts.block({
+		name = spec.id .. "_" .. platform.role .. "_" .. tostring(platform.index),
+		size = Vector3.new(platform.width, platform.thickness, platform.depth),
+		cframe = at(frame, 0, 0, 0),
+		color = color,
+		parent = parent,
+		material = material,
+	})
+	if platform.role == "finish" then
+		main.Transparency = 0.1
+	end
+	tag(main, spec, platform, frame)
+
+	decorate(spec, platform, frame, main, parent)
+
+	local kind = platform.kind
+	if kind == "start" then
+		Parts.decal(main, Enum.NormalId.Top, "START", Parts.rgb(palette.accent))
+		rim(main, frame, platform, Parts.rgb(palette.accent), parent)
+	elseif kind == "checkpoint" then
+		checkpointDecor(spec, platform, frame, main, parent)
+	elseif kind == "finish" then
+		finishDecor(spec, platform, frame, main, parent)
+	elseif kind == "spinner" then
+		makeSpinner(spec, platform, frame, parent, Parts.rgb(palette.kill))
+	elseif kind == "vanish" then
+		makeVanish(main, parent)
+	elseif kind == "conveyor" then
+		makeConveyor(main, platform, frame, parent, Parts.rgb(palette.accent))
+	elseif kind == "hurdles" then
+		makeHurdles(platform, frame, parent, Parts.rgb(palette.kill), spec)
+	elseif kind == "ledge" then
+		local side = platform.wall or 1
+		Parts.block({
+			name = "ClimbWall",
+			size = Vector3.new(1, 16, platform.depth + 6),
+			cframe = at(frame, 0, side * (platform.width / 2 + 0.5), 5),
+			color = Parts.rgb(palette.alt),
+			parent = parent,
+			material = if platform.look == "brick" then M.Brick else M.Slate,
+		})
+	end
+	if platform.move then
+		makeMover(main, frame, platform.move)
+	end
+	return main
+end
+
+-- Kill floor under a course: goo, ectoplasm, or lava depending on the stage.
+function Obstacles.KillFloor(spec: CourseLayout.CourseSpec, parent: Instance): BasePart
+	local bounds = CourseLayout.CourseBounds(spec, 12)
+	-- Dim neon so a big glowing floor does not wash the scene out under bloom.
+	local material = M.Neon
+	local transparency = 0.25
+	local dim = 0.55
+	if spec.id == "stage3" then
+		material = Parts.material("CrackedLava", M.Neon)
+		transparency = 0
+		dim = 0.2
+	end
+	local floor = Parts.block({
+		name = spec.id .. "_KillFloor",
+		size = Vector3.new(bounds.sx, 1.2, bounds.sz),
+		position = Vector3.new(bounds.x, CourseLayout.GROUND_TOP + 0.6, bounds.z),
+		color = Parts.rgb(spec.palette.kill):Lerp(Color3.new(0, 0, 0), dim),
+		parent = parent,
+		material = material,
+		transparency = transparency,
+	})
+	floor.CastShadow = false
+	floor:SetAttribute("Role", "kill")
+	floor:SetAttribute("CourseId", spec.id)
+	return floor
+end
+
+-- Re-exported so World can drop matching props along a course edge.
+Obstacles.Props = Props
+
+return Obstacles
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="36">
+          <Properties>
+            <string name="Name">Props</string>
+            <string name="Source"><![CDATA[--!strict
+-- Spooky-cute props built from Parts. Every builder takes a CFrame at ground
+-- level whose LookVector is the prop's "front", and returns a Model.
+-- Decorative pieces use Parts.block{decor = true}: no touch, no query, no shadow.
+
+local Parts = require(script.Parent.Parent.Parts)
+
+local Props = {}
+
+local rgb = Color3.fromRGB
+local M = Enum.Material
+
+local IRON = rgb(28, 26, 34)
+local BARK = rgb(52, 40, 38)
+local STONE = rgb(118, 116, 128)
+local PUMPKIN = rgb(255, 128, 28)
+local FLAME = rgb(255, 196, 90)
+local VAN_RED = rgb(235, 48, 26)
+
+local function model(name: string, parent: Instance): Model
+	local m = Instance.new("Model")
+	m.Name = name
+	m.Parent = parent
+	return m
+end
+
+local function piece(
+	parent: Instance,
+	name: string,
+	size: Vector3,
+	cf: CFrame,
+	color: Color3,
+	material: Enum.Material?,
+	solid: boolean?,
+	shape: Enum.PartType?
+): Part
+	return Parts.block({
+		name = name,
+		size = size,
+		cframe = cf,
+		color = color,
+		parent = parent,
+		material = material,
+		decor = not solid,
+		canCollide = if solid then true else false,
+		shape = shape,
+	})
+end
+
+
+function Props.jackOLantern(parent: Instance, cf: CFrame, scale: number?): Model
+	local s = scale or 1
+	local m = model("JackOLantern", parent)
+	piece(m, "Pumpkin", Vector3.new(2.6, 2.6, 2.6) * s, cf * CFrame.new(0, 1.3 * s, 0), PUMPKIN, M.SmoothPlastic, true, Enum.PartType.Ball)
+	piece(m, "Stem", Vector3.new(0.35, 0.6, 0.35) * s, cf * CFrame.new(0, 2.45 * s, 0), rgb(70, 110, 40), M.Wood)
+	-- Friendly face: two eyes and a smile, glowing.
+	for _, x in { -0.5, 0.5 } do
+		piece(m, "Eye", Vector3.new(0.45, 0.45, 0.2) * s, cf * CFrame.new(x * s, 1.45 * s, -1.22 * s), FLAME, M.Neon)
+	end
+	piece(m, "Smile", Vector3.new(1.2, 0.25, 0.2) * s, cf * CFrame.new(0, 0.75 * s, -1.2 * s), FLAME, M.Neon)
+	return m
+end
+
+function Props.tombstone(parent: Instance, cf: CFrame, text: string?, tall: number?): Model
+	local m = model("Tombstone", parent)
+	local h = tall or 3.2
+	local slab = piece(m, "Stone", Vector3.new(2.6, h, 0.8), cf * CFrame.new(0, h / 2, 0), STONE, M.Slate, true)
+	piece(m, "Cap", Vector3.new(0.8, 2.6, 2.6), cf * CFrame.new(0, h, 0) * CFrame.Angles(0, math.rad(90), 0), STONE, M.Slate, false, Enum.PartType.Cylinder)
+	piece(m, "Mound", Vector3.new(3, 0.5, 4.5), cf * CFrame.new(0, 0.25, 2.4), rgb(46, 52, 40), M.Ground)
+	if text then
+		Parts.decal(slab, Enum.NormalId.Front, text, rgb(30, 24, 40))
+	end
+	return m
+end
+
+function Props.coffin(parent: Instance, cf: CFrame, standing: boolean?): Model
+	local m = model("Coffin", parent)
+	local base = if standing then cf * CFrame.new(0, 3.2, 0) * CFrame.Angles(math.rad(-90), 0, 0) else cf * CFrame.new(0, 0.6, 0)
+	piece(m, "Box", Vector3.new(2.6, 1.2, 6.2), base, rgb(70, 40, 34), M.Wood, true)
+	piece(m, "Lid", Vector3.new(2.8, 0.3, 6.4), base * CFrame.new(0, 0.7, 0), rgb(92, 54, 44), M.Wood)
+	piece(m, "Trim", Vector3.new(2.9, 0.12, 0.5), base * CFrame.new(0, 0.9, -1.4), rgb(180, 80, 255), M.Neon)
+	return m
+end
+
+function Props.fence(parent: Instance, from: Vector3, to: Vector3, height: number?): Model
+	local m = model("IronFence", parent)
+	local h = height or 4
+	local delta = to - from
+	local length = delta.Magnitude
+	if length < 0.5 then
+		return m
+	end
+	local mid = (from + to) / 2
+	local frame = CFrame.lookAt(mid, mid + delta)
+	-- Rails are solid so players do not fall off the plaza by accident.
+	piece(m, "RailTop", Vector3.new(0.3, 0.3, length), frame * CFrame.new(0, h - 0.4, 0), IRON, M.Metal, true)
+	piece(m, "RailLow", Vector3.new(0.3, 0.3, length), frame * CFrame.new(0, 0.8, 0), IRON, M.Metal, true)
+	local posts = math.max(2, math.floor(length / 2.5))
+	for i = 0, posts do
+		local t = (i / posts - 0.5) * length
+		piece(m, "Bar", Vector3.new(0.22, h, 0.22), frame * CFrame.new(0, h / 2, t), IRON, M.Metal)
+		piece(m, "Spike", Vector3.new(0.35, 0.35, 0.35), frame * CFrame.new(0, h + 0.15, t) * CFrame.Angles(0, 0, math.rad(45)) * CFrame.Angles(math.rad(45), 0, 0), IRON, M.Metal)
+	end
+	return m
+end
+
+function Props.deadTree(parent: Instance, cf: CFrame, height: number?): Model
+	local m = model("DeadTree", parent)
+	local h = height or 14
+	piece(m, "Trunk", Vector3.new(1.6, h, 1.6), cf * CFrame.new(0, h / 2, 0), BARK, M.Wood, true)
+	local branches = {
+		{ 0.55, 35, 0, 6 },
+		{ 0.7, -40, 90, 5 },
+		{ 0.8, 30, 200, 4.5 },
+		{ 0.9, -25, 300, 3.5 },
+	}
+	for _, b in branches do
+		local y = h * b[1]
+		local len = b[4]
+		local branchCf = cf
+			* CFrame.new(0, y, 0)
+			* CFrame.Angles(0, math.rad(b[3]), 0)
+			* CFrame.Angles(0, 0, math.rad(b[2]))
+			* CFrame.new(0, len / 2, 0)
+		piece(m, "Branch", Vector3.new(0.6, len, 0.6), branchCf, BARK, M.Wood)
+	end
+	return m
+end
+
+function Props.candelabra(parent: Instance, cf: CFrame, lit: boolean?): Model
+	local m = model("Candelabra", parent)
+	local gold = rgb(196, 150, 70)
+	piece(m, "Foot", Vector3.new(2, 0.4, 2), cf * CFrame.new(0, 0.2, 0), gold, M.Metal, true)
+	piece(m, "Stem", Vector3.new(0.35, 4.5, 0.35), cf * CFrame.new(0, 2.45, 0), gold, M.Metal, true)
+	piece(m, "Arm", Vector3.new(3.4, 0.3, 0.3), cf * CFrame.new(0, 4.2, 0), gold, M.Metal)
+	for _, x in { -1.6, 0, 1.6 } do
+		local yBase = if x == 0 then 4.9 else 4.5
+		piece(m, "Candle", Vector3.new(0.4, 1, 0.4), cf * CFrame.new(x, yBase, 0), rgb(248, 240, 226), M.SmoothPlastic)
+		local flame = piece(m, "Flame", Vector3.new(0.3, 0.5, 0.3), cf * CFrame.new(x, yBase + 0.75, 0), FLAME, M.Neon)
+		if lit and x == 0 then
+			Parts.light(flame, rgb(255, 170, 90), 16, 1.6)
+		end
+	end
+	return m
+end
+
+function Props.mailbox(parent: Instance, cf: CFrame): Model
+	local m = model("Mailbox", parent)
+	piece(m, "Post", Vector3.new(0.4, 3.4, 0.4), cf * CFrame.new(0, 1.7, 0), rgb(60, 44, 36), M.Wood, true)
+	piece(m, "Box", Vector3.new(1.2, 1.1, 2), cf * CFrame.new(0, 3.9, 0), rgb(40, 40, 56), M.Metal, true)
+	piece(m, "Flag", Vector3.new(0.1, 0.8, 0.4), cf * CFrame.new(0.65, 4.4, 0.5), VAN_RED, M.SmoothPlastic)
+	return m
+end
+
+function Props.lampPost(parent: Instance, cf: CFrame, color: Color3?): Model
+	local m = model("LampPost", parent)
+	piece(m, "Pole", Vector3.new(0.5, 9, 0.5), cf * CFrame.new(0, 4.5, 0), IRON, M.Metal, true)
+	piece(m, "Cap", Vector3.new(1.4, 0.4, 1.4), cf * CFrame.new(0, 10.5, 0), IRON, M.Metal)
+	local bulb = piece(m, "Lantern", Vector3.new(1, 1.4, 1), cf * CFrame.new(0, 9.7, 0), color or rgb(190, 120, 255), M.Neon)
+	Parts.light(bulb, color or rgb(190, 120, 255), 22, 1.4)
+	return m
+end
+
+-- A two-story haunted house with a porch. Front faces cf.LookVector.
+function Props.house(parent: Instance, cf: CFrame, wall: Color3, glow: Color3): Model
+	local m = model("HauntedHouse", parent)
+	local w, d, h = 16, 14, 14
+	-- Body sits behind the porch; the porch is at local -Z (front).
+	local body = cf * CFrame.new(0, h / 2, 3)
+	piece(m, "Body", Vector3.new(w, h, d), body, wall, M.WoodPlanks, true)
+	-- Gable roof from two wedges.
+	local roofH = 6
+	local roofBase = cf * CFrame.new(0, h + roofH / 2, 3)
+	Parts.wedge("RoofL", Vector3.new(d + 1, roofH, w / 2 + 0.5), roofBase * CFrame.new(-w / 4, 0, 0) * CFrame.Angles(0, math.rad(90), 0), rgb(46, 30, 52), m, Parts.material("RoofShingles", M.Slate))
+	Parts.wedge("RoofR", Vector3.new(d + 1, roofH, w / 2 + 0.5), roofBase * CFrame.new(w / 4, 0, 0) * CFrame.Angles(0, math.rad(-90), 0), rgb(46, 30, 52), m, Parts.material("RoofShingles", M.Slate))
+	piece(m, "Chimney", Vector3.new(2, 6, 2), cf * CFrame.new(w / 3, h + 4, 6), rgb(80, 46, 46), M.Brick, true)
+	-- Windows glow (no lights, neon reads fine with bloom).
+	for _, x in { -4.5, 4.5 } do
+		for _, y in { 4.5, 10.5 } do
+			piece(m, "Window", Vector3.new(3, 3, 0.2), cf * CFrame.new(x, y, 3 - d / 2 - 0.1), glow, M.Neon)
+			piece(m, "Mullion", Vector3.new(0.25, 3.1, 0.25), cf * CFrame.new(x, y, 3 - d / 2 - 0.25), rgb(20, 16, 24), M.Wood)
+		end
+	end
+	piece(m, "Attic", Vector3.new(2, 2, 0.2), cf * CFrame.new(0, h + 2, 3 - d / 2 + 0.4), glow, M.Neon)
+	piece(m, "Door", Vector3.new(3.4, 6, 0.3), cf * CFrame.new(0, 3, 3 - d / 2 - 0.15), rgb(60, 24, 30), M.Wood)
+	-- Porch deck, steps, roof on posts.
+	local porchDepth = 5
+	local porchZ = 3 - d / 2 - porchDepth / 2
+	piece(m, "PorchDeck", Vector3.new(w, 0.8, porchDepth), cf * CFrame.new(0, 0.4, porchZ), rgb(86, 58, 44), M.WoodPlanks, true)
+	piece(m, "PorchRoof", Vector3.new(w + 1, 0.5, porchDepth + 1), cf * CFrame.new(0, 7.2, porchZ), rgb(46, 30, 52), Parts.material("RoofShingles", M.Slate), true)
+	for _, x in { -w / 2 + 0.5, w / 2 - 0.5 } do
+		piece(m, "PorchPost", Vector3.new(0.5, 6.6, 0.5), cf * CFrame.new(x, 3.8, porchZ - porchDepth / 2 + 0.4), rgb(230, 222, 210), M.Wood, true)
+	end
+	Props.jackOLantern(m, cf * CFrame.new(-3.5, 0.8, porchZ - 1) * CFrame.Angles(0, math.rad(180), 0), 0.8)
+	Props.jackOLantern(m, cf * CFrame.new(3.5, 0.8, porchZ - 1) * CFrame.Angles(0, math.rad(180), 0), 0.8)
+	return m
+end
+
+-- DoorDash-red delivery van. Front faces cf.LookVector.
+function Props.van(parent: Instance, cf: CFrame): Model
+	local m = model("DeliveryVan", parent)
+	local body = piece(m, "Body", Vector3.new(7, 6, 14), cf * CFrame.new(0, 4.2, 1), VAN_RED, M.SmoothPlastic, true)
+	piece(m, "Hood", Vector3.new(7, 3.4, 3.4), cf * CFrame.new(0, 2.9, -7.7), VAN_RED, M.SmoothPlastic, true)
+	piece(m, "Windshield", Vector3.new(6.4, 2.4, 0.2), cf * CFrame.new(0, 6, -5.6), rgb(120, 160, 220), M.Glass)
+	piece(m, "Stripe", Vector3.new(7.1, 0.6, 14.1), cf * CFrame.new(0, 3.2, 1), rgb(255, 245, 235), M.SmoothPlastic)
+	for _, x in { -3.6, 3.6 } do
+		for _, z in { -6.5, 5 } do
+			piece(m, "Wheel", Vector3.new(1.2, 3, 3), cf * CFrame.new(x, 1.5, z), rgb(24, 22, 26), M.SmoothPlastic, true, Enum.PartType.Cylinder)
+		end
+	end
+	for _, x in { -2.5, 2.5 } do
+		piece(m, "Headlight", Vector3.new(1.2, 0.8, 0.2), cf * CFrame.new(x, 3.2, -9.45), rgb(255, 246, 200), M.Neon)
+	end
+	-- Delivery bag on the roof, with a vampire-fang logo made of two white wedges.
+	piece(m, "RoofBag", Vector3.new(3, 2.2, 3), cf * CFrame.new(0, 8.3, 2), rgb(200, 36, 30), M.Fabric)
+	Parts.decal(body, Enum.NormalId.Right, "CRACKULA DASH", rgb(255, 250, 240))
+	Parts.decal(body, Enum.NormalId.Left, "CRACKULA DASH", rgb(255, 250, 240))
+	return m
+end
+
+-- Rugby goal posts (H shape). Posts straddle the path along cf.RightVector.
+function Props.goalPosts(parent: Instance, cf: CFrame, span: number, padColor: Color3): Model
+	local m = model("RugbyPosts", parent)
+	local postH = 24
+	for _, x in { -span / 2, span / 2 } do
+		piece(m, "Post", Vector3.new(0.9, postH, 0.9), cf * CFrame.new(x, postH / 2, 0), rgb(240, 240, 240), M.SmoothPlastic, true)
+		piece(m, "Pad", Vector3.new(2, 5, 2), cf * CFrame.new(x, 2.5, 0), padColor, M.Fabric, true)
+	end
+	piece(m, "Crossbar", Vector3.new(span, 0.8, 0.8), cf * CFrame.new(0, 10, 0), rgb(240, 240, 240), M.SmoothPlastic, true)
+	return m
+end
+
+-- Gothic manor gate: two towers, a wall, and an arch the path runs through.
+function Props.manorGate(parent: Instance, cf: CFrame, opening: number): Model
+	local m = model("ManorGate", parent)
+	local stone = rgb(64, 58, 74)
+	local towerX = opening / 2 + 3
+	for _, x in { -towerX, towerX } do
+		piece(m, "Tower", Vector3.new(6, 24, 6), cf * CFrame.new(x, 12, 0), stone, M.Cobblestone, true)
+		piece(m, "Spire", Vector3.new(4.5, 6, 4.5), cf * CFrame.new(x, 27, 0), rgb(40, 28, 50), Parts.material("RoofShingles", M.Slate))
+		piece(m, "Tip", Vector3.new(1.4, 3, 1.4), cf * CFrame.new(x, 31.5, 0), rgb(40, 28, 50), M.Slate)
+		for _, y in { 9, 16 } do
+			piece(m, "Slit", Vector3.new(1, 2.4, 0.2), cf * CFrame.new(x, y, -3.1), rgb(255, 60, 80), M.Neon)
+		end
+		for _, mx in { -2.2, 0, 2.2 } do
+			piece(m, "Merlon", Vector3.new(1.2, 1.4, 6), cf * CFrame.new(x + mx, 24.7, 0), stone, M.Cobblestone)
+		end
+	end
+	piece(m, "Lintel", Vector3.new(opening, 5, 4), cf * CFrame.new(0, 19.5, 0), stone, M.Cobblestone, true)
+	-- Iron portcullis teeth, raised (decor only, path stays open).
+	for i = -3, 3 do
+		piece(m, "Tooth", Vector3.new(0.3, 2.5, 0.3), cf * CFrame.new(i * (opening / 8), 15.8, -1.6), IRON, M.Metal)
+	end
+	for _, side in { -1, 1 } do
+		piece(m, "Wall", Vector3.new(14, 10, 2), cf * CFrame.new(side * (towerX + 10), 5, 0), stone, M.Cobblestone, true)
+	end
+	return m
+end
+
+-- Big moon in the sky from parts: a glowing disc with a halo and craters.
+function Props.moon(parent: Instance, position: Vector3, size: number): Model
+	local m = model("Moon", parent)
+	local face = CFrame.lookAt(position, Vector3.new(0, position.Y * 0.2, 0))
+	piece(m, "MoonBall", Vector3.new(size, size, size), face, rgb(255, 244, 210), M.Neon, false, Enum.PartType.Ball)
+	local halo = piece(m, "Halo", Vector3.new(size * 1.35, size * 1.35, size * 1.35), face, rgb(200, 170, 255), M.Neon, false, Enum.PartType.Ball)
+	halo.Transparency = 0.85
+	for _, c in { { -0.2, 0.15, 0.16 }, { 0.18, -0.1, 0.12 }, { 0.05, 0.25, 0.08 }, { -0.1, -0.25, 0.1 } } do
+		local craterSize = size * c[3]
+		piece(m, "Crater", Vector3.new(craterSize, craterSize, craterSize), face * CFrame.new(c[1] * size, c[2] * size, -size * 0.44), rgb(232, 214, 180), M.SmoothPlastic, false, Enum.PartType.Ball)
+	end
+	return m
+end
+
+-- A cute bat: body, two wings, two red eyes. The client flaps and circles it.
+function Props.bat(parent: Instance, cf: CFrame): Model
+	local m = model("Bat", parent)
+	local body = piece(m, "Body", Vector3.new(0.9, 0.9, 1.3), cf, rgb(24, 18, 30), M.SmoothPlastic, false, Enum.PartType.Ball)
+	m.PrimaryPart = body
+	for _, side in { -1, 1 } do
+		local wing = piece(m, if side < 0 then "WingL" else "WingR", Vector3.new(1.8, 0.12, 1), cf * CFrame.new(side * 1.25, 0, 0), rgb(36, 24, 44), M.SmoothPlastic)
+		wing:SetAttribute("Side", side)
+		piece(m, "Eye", Vector3.new(0.16, 0.16, 0.1), cf * CFrame.new(side * 0.2, 0.15, -0.62), rgb(255, 60, 70), M.Neon)
+	end
+	return m
+end
+
+function Props.streetLine(parent: Instance, from: Vector3, to: Vector3, color: Color3): Part
+	local delta = to - from
+	local mid = (from + to) / 2
+	return piece(parent, "Line", Vector3.new(0.6, 0.06, delta.Magnitude), CFrame.lookAt(mid, mid + delta), color, M.Neon)
+end
+
+return Props
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="37">
+          <Properties>
+            <string name="Name">Sky</string>
+            <string name="Source"><![CDATA[--!strict
+-- Night lighting for the vampire theme. Every write is pcall-wrapped: some
+-- Lighting properties are not script-writable, and those live in
+-- default.project.json instead (Technology).
+
+local Lighting = game:GetService("Lighting")
+
+local Sky = {}
+
+local rgb = Color3.fromRGB
+
+local function set(object: Instance, props: { [string]: any })
+	for key, value in props do
+		local ok, err = pcall(function()
+			(object :: any)[key] = value
+		end)
+		if not ok then
+			warn(`[CountCrackula] skipped {object.ClassName}.{key}: {err}`)
+		end
+	end
+end
+
+local function fresh(className: string, name: string): Instance?
+	local ok, result = pcall(function()
+		for _, child in Lighting:GetChildren() do
+			if child.ClassName == className then
+				child:Destroy()
+			end
+		end
+		local instance = Instance.new(className)
+		instance.Name = name
+		return instance
+	end)
+	if ok then
+		return result
+	end
+	warn("[CountCrackula] could not create " .. className .. ": " .. tostring(result))
+	return nil
+end
+
+function Sky.Apply()
+	set(Lighting, {
+		ClockTime = 0.4,
+		Brightness = 1.8,
+		Ambient = rgb(78, 66, 118),
+		OutdoorAmbient = rgb(112, 98, 164),
+		ColorShift_Top = rgb(130, 100, 210),
+		ColorShift_Bottom = rgb(60, 20, 60),
+		EnvironmentDiffuseScale = 0.45,
+		EnvironmentSpecularScale = 0.7,
+		ExposureCompensation = 0.25,
+		GlobalShadows = true,
+		FogColor = rgb(40, 20, 52),
+		FogStart = 120,
+		FogEnd = 1100,
+		GeographicLatitude = 30,
+	})
+
+	local atmosphere = fresh("Atmosphere", "NightMist")
+	if atmosphere then
+		set(atmosphere, {
+			Density = 0.27,
+			Offset = 0.08,
+			Color = rgb(86, 62, 138),
+			Decay = rgb(70, 24, 60),
+			Glare = 0,
+			Haze = 1.3,
+		})
+		atmosphere.Parent = Lighting
+	end
+
+	local sky = fresh("Sky", "NightSky")
+	if sky then
+		set(sky, {
+			StarCount = 3500,
+			CelestialBodiesShown = true,
+			MoonAngularSize = 16,
+		})
+		sky.Parent = Lighting
+	end
+
+	local bloom = fresh("BloomEffect", "NeonBloom")
+	if bloom then
+		set(bloom, { Intensity = 0.7, Size = 28, Threshold = 1.3 })
+		bloom.Parent = Lighting
+	end
+
+	local grade = fresh("ColorCorrectionEffect", "MoonGrade")
+	if grade then
+		set(grade, {
+			TintColor = rgb(232, 218, 255),
+			Saturation = 0.12,
+			Contrast = 0.12,
+			Brightness = 0.03,
+		})
+		grade.Parent = Lighting
+	end
+end
+
+return Sky
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="38">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+      <float name="CharacterJumpHeight">7.2</float>
+      <bool name="CharacterUseJumpPower">false</bool>
+      <float name="CharacterWalkSpeed">16</float>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="39">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="LocalScript" referent="40">
+        <Properties>
+          <string name="Name">Client</string>
+          <string name="Source"><![CDATA[--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "CrackulaHud"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = playerGui
+
+local panel = Instance.new("Frame")
+panel.Name = "CashPanel"
+panel.AnchorPoint = Vector2.new(0.5, 0)
+panel.Position = UDim2.new(0.5, 0, 0, 12)
+panel.Size = UDim2.fromOffset(240, 72)
+panel.BackgroundColor3 = Color3.fromRGB(28, 20, 24)
+panel.BackgroundTransparency = 0.15
+panel.BorderSizePixel = 0
+panel.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = panel
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(255, 186, 92)
+stroke.Thickness = 1.5
+stroke.Transparency = 0.2
+stroke.Parent = panel
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(12, 8)
+title.Size = UDim2.new(1, -24, 0, 18)
+title.Font = Enum.Font.Gotham
+pcall(function()
+	title.Font = Enum.Font.Creepster
+end)
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = Color3.fromRGB(255, 186, 92)
+title.Text = "COUNT CRACKULA"
+title.Parent = panel
+
+local cashLabel = Instance.new("TextLabel")
+cashLabel.BackgroundTransparency = 1
+cashLabel.Position = UDim2.fromOffset(12, 28)
+cashLabel.Size = UDim2.new(1, -24, 0, 36)
+cashLabel.Font = Enum.Font.GothamBold
+cashLabel.TextSize = 28
+cashLabel.TextXAlignment = Enum.TextXAlignment.Left
+cashLabel.TextColor3 = Color3.fromRGB(255, 244, 230)
+cashLabel.Text = "Cash  0"
+cashLabel.Parent = panel
+
+local toast = Instance.new("TextLabel")
+toast.Name = "Toast"
+toast.AnchorPoint = Vector2.new(0.5, 1)
+toast.Position = UDim2.new(0.5, 0, 1, -28)
+toast.Size = UDim2.new(0.9, 0, 0, 44)
+toast.BackgroundColor3 = Color3.fromRGB(28, 20, 24)
+toast.BackgroundTransparency = 0.1
+toast.Font = Enum.Font.GothamBold
+toast.TextSize = 18
+toast.TextColor3 = Color3.fromRGB(255, 244, 230)
+toast.Text = ""
+toast.Visible = false
+toast.Parent = gui
+local toastCorner = Instance.new("UICorner")
+toastCorner.CornerRadius = UDim.new(0, 8)
+toastCorner.Parent = toast
+
+local toastToken = 0
+local function showToast(message: string)
+	toastToken += 1
+	local token = toastToken
+	toast.Text = message
+	toast.Visible = true
+	task.delay(3.4, function()
+		if toastToken == token then
+			toast.Visible = false
+		end
+	end)
+end
+
+local remotes = ReplicatedStorage:WaitForChild("Remotes", 30)
+if remotes then
+	local notify = remotes:WaitForChild("Notify")
+	if notify and notify:IsA("RemoteEvent") then
+		notify.OnClientEvent:Connect(function(message)
+			if type(message) == "string" then
+				showToast(message)
+			end
+		end)
+	end
+else
+	showToast("Still tying the cleats…")
+end
+
+local leaderstats = player:WaitForChild("leaderstats", 30)
+if leaderstats then
+	local cash = leaderstats:WaitForChild("Cash", 10)
+	if cash and cash:IsA("IntValue") then
+		local function render()
+			cashLabel.Text = "Cash  " .. tostring(cash.Value)
+		end
+		render()
+		cash.Changed:Connect(render)
+	end
+end
+
+local ShopGui = require(script.ShopGui)
+ShopGui.Attach(gui, showToast)
+
+require(script.Bats).Start()
+]]></string>
+        </Properties>
+        <Item class="ModuleScript" referent="41">
+          <Properties>
+            <string name="Name">Bats</string>
+            <string name="Source"><![CDATA[--!strict
+-- Purely cosmetic, client-side: circles and flaps the bats the server built
+-- under workspace.CountCrackulaMap.Bats,.
+-- Local CFrame writes never replicate, so this costs the server nothing.
+
+local RunService = game:GetService("RunService")
+
+local Bats = {}
+
+type Bat = {
+	parts: { { part: BasePart, offset: CFrame, side: number } },
+	center: Vector3,
+	radius: number,
+	speed: number,
+	phase: number,
+	bob: number,
+}
+
+function Bats.Start()
+	task.spawn(function()
+		local map = workspace:WaitForChild("CountCrackulaMap", 60)
+		local folder = map and map:WaitForChild("Bats", 30)
+		if not folder then
+			return
+		end
+		local bats: { Bat } = {}
+		for _, model in folder:GetChildren() do
+			if model:IsA("Model") and model.PrimaryPart then
+				local root = model.PrimaryPart :: BasePart
+				local center = model:GetAttribute("Center")
+				if typeof(center) ~= "Vector3" then
+					continue
+				end
+				local entry: Bat = {
+					parts = {},
+					center = center :: Vector3,
+					radius = tonumber(model:GetAttribute("Radius")) or 16,
+					speed = tonumber(model:GetAttribute("Speed")) or 0.8,
+					phase = tonumber(model:GetAttribute("Phase")) or 0,
+					bob = tonumber(model:GetAttribute("Bob")) or 2,
+				}
+				for _, child in model:GetChildren() do
+					if child:IsA("BasePart") then
+						local side = child:GetAttribute("Side")
+						table.insert(entry.parts, {
+							part = child,
+							offset = root.CFrame:ToObjectSpace(child.CFrame),
+							side = if type(side) == "number" then side else 0,
+						})
+					end
+				end
+				table.insert(bats, entry)
+			end
+		end
+		RunService.RenderStepped:Connect(function()
+			local t = os.clock()
+			for _, bat in bats do
+				local angle = bat.phase + t * bat.speed
+				local pos = bat.center
+					+ Vector3.new(math.cos(angle) * bat.radius, math.sin(t * 2 + bat.phase) * bat.bob, math.sin(angle) * bat.radius)
+				local tangent = Vector3.new(-math.sin(angle), 0, math.cos(angle)) * math.sign(bat.speed)
+				local root = CFrame.lookAt(pos, pos + tangent)
+				local flap = math.sin(t * 14 + bat.phase) * 0.6
+				for _, piece in bat.parts do
+					local cf = root * piece.offset
+					if piece.side ~= 0 then
+						cf = root * CFrame.Angles(0, 0, -piece.side * flap) * piece.offset
+					end
+					piece.part.CFrame = cf
+				end
+			end
+		end)
+	end)
+end
+
+return Bats
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="42">
+          <Properties>
+            <string name="Name">ShopGui</string>
+            <string name="Source"><![CDATA[--!strict
+-- Shop list. Ids of 0 stay on the board until the dashboard SKUs exist.
+-- Prompts are client-side. Grants happen on the server.
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Catalog =
+	require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Shop"):WaitForChild("Catalog"))
+
+local ShopGui = {}
+
+function ShopGui.Attach(gui: ScreenGui, toast: (string) -> ())
+	local open = Instance.new("TextButton")
+	open.Name = "ShopButton"
+	open.AnchorPoint = Vector2.new(1, 0)
+	open.Position = UDim2.new(1, -12, 0, 12)
+	open.Size = UDim2.fromOffset(88, 40)
+	open.BackgroundColor3 = Color3.fromRGB(226, 48, 42)
+	open.Font = Enum.Font.GothamBold
+	open.TextSize = 16
+	open.TextColor3 = Color3.fromRGB(255, 244, 230)
+	open.Text = "Shop"
+	open.AutoButtonColor = true
+	open.Parent = gui
+	local openCorner = Instance.new("UICorner")
+	openCorner.CornerRadius = UDim.new(0, 8)
+	openCorner.Parent = open
+
+	local panel = Instance.new("Frame")
+	panel.Name = "Shop"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromScale(0.92, 0.78)
+	panel.BackgroundColor3 = Color3.fromRGB(24, 18, 22)
+	panel.Visible = false
+	panel.Parent = gui
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 12)
+	panelCorner.Parent = panel
+	local sizeCap = Instance.new("UISizeConstraint")
+	sizeCap.MaxSize = Vector2.new(480, 560)
+	sizeCap.MinSize = Vector2.new(280, 320)
+	sizeCap.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.fromOffset(16, 10)
+	title.Size = UDim2.new(1, -80, 0, 28)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 20
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 214, 140)
+	title.Text = "Count's bag"
+	title.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.AnchorPoint = Vector2.new(1, 0)
+	close.Position = UDim2.new(1, -10, 0, 10)
+	close.Size = UDim2.fromOffset(36, 28)
+	close.BackgroundTransparency = 1
+	close.Font = Enum.Font.GothamBold
+	close.TextSize = 18
+	close.TextColor3 = Color3.fromRGB(255, 244, 230)
+	close.Text = "X"
+	close.Parent = panel
+
+	local scroller = Instance.new("ScrollingFrame")
+	scroller.Position = UDim2.fromOffset(12, 48)
+	scroller.Size = UDim2.new(1, -24, 1, -60)
+	scroller.BackgroundTransparency = 1
+	scroller.BorderSizePixel = 0
+	scroller.ScrollBarThickness = 6
+	scroller.CanvasSize = UDim2.fromOffset(0, 0)
+	scroller.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroller.Parent = panel
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.Parent = scroller
+
+	local function addRow(kind: string, def)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -8, 0, 72)
+		row.BackgroundColor3 = Color3.fromRGB(40, 30, 36)
+		row.Parent = scroller
+		local rowCorner = Instance.new("UICorner")
+		rowCorner.CornerRadius = UDim.new(0, 8)
+		rowCorner.Parent = row
+
+		local name = Instance.new("TextLabel")
+		name.BackgroundTransparency = 1
+		name.Position = UDim2.fromOffset(10, 6)
+		name.Size = UDim2.new(1, -110, 0, 22)
+		name.Font = Enum.Font.GothamBold
+		name.TextSize = 16
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		name.TextColor3 = Color3.fromRGB(255, 244, 230)
+		name.Text = def.name
+		name.Parent = row
+
+		local blurb = Instance.new("TextLabel")
+		blurb.BackgroundTransparency = 1
+		blurb.Position = UDim2.fromOffset(10, 28)
+		blurb.Size = UDim2.new(1, -110, 0, 36)
+		blurb.Font = Enum.Font.Gotham
+		blurb.TextSize = 13
+		blurb.TextXAlignment = Enum.TextXAlignment.Left
+		blurb.TextYAlignment = Enum.TextYAlignment.Top
+		blurb.TextWrapped = true
+		blurb.TextColor3 = Color3.fromRGB(214, 190, 180)
+		blurb.Text = def.blurb
+		blurb.Parent = row
+
+		local buy = Instance.new("TextButton")
+		buy.AnchorPoint = Vector2.new(1, 0.5)
+		buy.Position = UDim2.new(1, -8, 0.5, 0)
+		buy.Size = UDim2.fromOffset(84, 32)
+		buy.BackgroundColor3 = Color3.fromRGB(255, 186, 92)
+		buy.Font = Enum.Font.GothamBold
+		buy.TextSize = 14
+		buy.TextColor3 = Color3.fromRGB(28, 18, 16)
+		buy.Text = if def.id == 0 then "No id" else (tostring(def.price) .. " R$")
+		buy.Parent = row
+		local buyCorner = Instance.new("UICorner")
+		buyCorner.CornerRadius = UDim.new(0, 6)
+		buyCorner.Parent = buy
+		buy.Activated:Connect(function()
+			if def.id == 0 then
+				toast(def.name .. " still has placeholder id 0.")
+				return
+			end
+			local ok = pcall(function()
+				if kind == "pass" then
+					MarketplaceService:PromptGamePassPurchase(def.id)
+				else
+					MarketplaceService:PromptProductPurchase(def.id)
+				end
+			end)
+			if not ok then
+				toast("Purchases need a published place.")
+			end
+		end)
+	end
+
+	for _, pass in Catalog.Passes do
+		addRow("pass", pass)
+	end
+	for _, product in Catalog.Products do
+		addRow("product", product)
+	end
+
+	open.Activated:Connect(function()
+		panel.Visible = not panel.Visible
+	end)
+	close.Activated:Connect(function()
+		panel.Visible = false
+	end)
+
+	local remotes = ReplicatedStorage:WaitForChild("Remotes", 30)
+	local refresh = if remotes then remotes:WaitForChild("RefreshPasses", 30) else nil
+	if refresh and refresh:IsA("RemoteEvent") then
+		local function ping()
+			refresh:FireServer()
+		end
+		MarketplaceService.PromptGamePassPurchaseFinished:Connect(ping)
+		MarketplaceService.PromptProductPurchaseFinished:Connect(ping)
+	end
+end
+
+return ShopGui
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="Workspace" referent="43">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <float name="FallenPartsDestroyHeight">-80</float>
+      <float name="Gravity">196.2</float>
+      <bool name="NeedsPivotMigration">false</bool>
+      <bool name="StreamingEnabled">false</bool>
+    </Properties>
+  </Item>
+</roblox>

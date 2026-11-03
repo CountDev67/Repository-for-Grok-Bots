@@ -1,6 +1,5 @@
 --!strict
 local Players = game:GetService("Players")
-local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Economy = require(ReplicatedStorage.Shared.Economy)
@@ -17,26 +16,15 @@ local Retention = require(script.Retention)
 local Gear = require(script.Gear)
 local PlayerLock = require(script.PlayerLock)
 local StudioTools = require(script.StudioTools)
+local Sky = require(script.World.Sky)
 
-Players.RespawnTime = 2.5
-workspace.StreamingEnabled = false
+pcall(function()
+	Players.RespawnTime = 2.5
+end)
 Movement.ApplyWorld()
 
-Lighting.ClockTime = 17.6
-Lighting.Brightness = 2.2
-Lighting.Ambient = Color3.fromRGB(110, 96, 112)
-Lighting.OutdoorAmbient = Color3.fromRGB(160, 130, 116)
-Lighting.FogColor = Color3.fromRGB(255, 176, 140)
-Lighting.FogEnd = 900
-
-local atmosphere = Instance.new("Atmosphere")
-atmosphere.Density = 0.28
-atmosphere.Offset = 0.15
-atmosphere.Color = Color3.fromRGB(255, 186, 156)
-atmosphere.Decay = Color3.fromRGB(180, 120, 110)
-atmosphere.Glare = 0.15
-atmosphere.Haze = 1.2
-atmosphere.Parent = Lighting
+-- Moonlit night. Every Lighting write inside is pcall-wrapped.
+Sky.Apply()
 
 Notify.Start()
 Leaderstats.Bind(Economy)
@@ -76,6 +64,8 @@ Stages.Start({
 		return Saves.IsLoaded(player)
 	end,
 })
+
+World.HookRescue(world.folder, Stages.Rescue)
 
 Pads.Start({
 	economy = Economy,

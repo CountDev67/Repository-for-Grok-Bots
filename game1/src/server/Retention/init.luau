@@ -202,7 +202,29 @@ function Retention.Start(deps: {
 		parent = deps.folder,
 		material = Enum.Material.Neon,
 	})
-	Parts.billboard(pad, "DOOR DASH SHIFT\n7-day streak\nDay 7: a sock", Vector3.new(0, 5, 0), 240)
+	-- Kiosk sign on a post behind the pad, turned toward the spawn.
+	local signPos = Vector3.new(29, CourseLayout.BASE_TOP + 6, -22)
+	local spawnX, spawnZ = CourseLayout.SpawnPoint()
+	local look = Vector3.new(spawnX - signPos.X, 0, spawnZ - signPos.Z).Unit
+	Parts.block({
+		name = "ShiftPost",
+		size = Vector3.new(0.6, 6, 0.6),
+		position = Vector3.new(signPos.X, CourseLayout.BASE_TOP + 3, signPos.Z) - look * 0.5,
+		color = Color3.fromRGB(28, 26, 34),
+		parent = deps.folder,
+		material = Enum.Material.Metal,
+	})
+	Parts.sign({
+		name = "ShiftSign",
+		parent = deps.folder,
+		cframe = CFrame.lookAt(signPos, signPos + look),
+		width = 8,
+		height = 3,
+		title = "DOORDASH SHIFT",
+		subtitle = "Daily clock-in · 7-day streak · Day 7: a lucky sock",
+		ink = Color3.fromRGB(255, 80, 60),
+		glow = Color3.fromRGB(80, 0, 10),
+	})
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Clock in"
 	prompt.ObjectText = "Daily shift"

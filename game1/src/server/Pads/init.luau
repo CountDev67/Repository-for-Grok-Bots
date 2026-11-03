@@ -1,6 +1,7 @@
 --!strict
 -- Placeholder porch. TODO(base-team): swap this for real tycoon pads.
 -- Buying all three calls BaseService.SetTier(player, 1).
+-- The Crypt Key pad (PorchPads.Upgrade) unlocks after that and sets tier 2.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
@@ -53,6 +54,20 @@ local function spawnOwned(player: Player, padId: string)
 	if not plot or plot.spawned[padId] then
 		return
 	end
+	if padId == PorchPads.Upgrade.id then
+		local placement = CourseLayout.UpgradePlacement(slotOf(player))
+		plot.spawned[padId] = PorchModels.Spawn(
+			"cryptkey",
+			Vector3.new(placement.x, placement.top + 1, placement.z),
+			plot.folder
+		)
+		local prompt = plot.prompts[padId]
+		if prompt then
+			prompt.Enabled = false
+			prompt.ActionText = "Owned"
+		end
+		return
+	end
 	local def = PorchPads.Get(padId)
 	if not def then
 		return
@@ -92,6 +107,11 @@ function Pads.Start(deps: { economy: any, base: any, notify: any, folder: Folder
 	mapFolder = deps.folder
 	base.TierChanged:Connect(function(player: Player)
 		refreshTier(player)
+		local plot = plotOf(player)
+		local prompt = plot and plot.prompts[PorchPads.Upgrade.id]
+		if plot and prompt and not plot.owned[PorchPads.Upgrade.id] then
+			prompt.Enabled = base.GetTier(player) >= PorchPads.Upgrade.requiresTier
+		end
 	end)
 end
 
@@ -121,12 +141,7 @@ function Pads.CreatePlot(player: Player)
 		})
 		pad:SetAttribute("PadId", def.id)
 		pad:SetAttribute("OwnerUserId", player.UserId)
-		Parts.billboard(
-			pad,
-			def.name .. "\n" .. tostring(def.cost) .. " cash",
-			Vector3.new(0, 4, 0),
-			200
-		)
+		Parts.billboard(pad, def.name .. "\n" .. tostring(def.cost) .. " cash", Vector3.new(0, 3, 0), 7, 45)
 
 		local prompt = Instance.new("ProximityPrompt")
 		prompt.ActionText = "Buy"
@@ -141,6 +156,38 @@ function Pads.CreatePlot(player: Player)
 		prompts[def.id] = prompt
 	end
 
+	local upgrade = PorchPads.Upgrade
+	local spot = CourseLayout.UpgradePlacement(slot)
+	local keyPad = Parts.block({
+		name = "Pad_" .. upgrade.id,
+		size = Vector3.new(spot.size, 1, spot.size),
+		position = Vector3.new(spot.x, spot.top + 0.5, spot.z),
+		color = Color3.fromRGB(170, 70, 255),
+		parent = folder,
+		material = Enum.Material.Neon,
+	})
+	keyPad:SetAttribute("PadId", upgrade.id)
+	keyPad:SetAttribute("OwnerUserId", player.UserId)
+	Parts.billboard(
+		keyPad,
+		upgrade.name .. "\n" .. tostring(upgrade.cost) .. " cash · Tier 2",
+		Vector3.new(0, 3, 0),
+		7,
+		45
+	)
+	local keyPrompt = Instance.new("ProximityPrompt")
+	keyPrompt.ActionText = "Buy"
+	keyPrompt.ObjectText = upgrade.name .. " · " .. tostring(upgrade.cost) .. " cash"
+	keyPrompt.HoldDuration = 0.4
+	keyPrompt.MaxActivationDistance = 10
+	keyPrompt.RequiresLineOfSight = false
+	keyPrompt.Enabled = false
+	keyPrompt.Parent = keyPad
+	keyPrompt.Triggered:Connect(function(triggeringPlayer)
+		Pads.TryUpgrade(triggeringPlayer, player.UserId)
+	end)
+	prompts[upgrade.id] = keyPrompt
+
 	local sign = Parts.block({
 		name = "PlotSign",
 		size = Vector3.new(1, 4, 1),
@@ -148,7 +195,7 @@ function Pads.CreatePlot(player: Player)
 		color = Color3.fromRGB(255, 214, 140),
 		parent = folder,
 	})
-	local board = Parts.billboard(sign, player.DisplayName .. "\nTier 0", Vector3.new(0, 3, 0), 220)
+	local board = Parts.billboard(sign, player.DisplayName .. "\nTier 0", Vector3.new(0, 3, 0), 7, 60)
 	local tierLabel = board:FindFirstChild("Text") :: TextLabel
 
 	plots[player.UserId] = {
@@ -202,8 +249,56 @@ function Pads.TryBuy(player: Player, padId: string, ownerUserId: number)
 		notify.Say(player, "Bought " .. (def and def.name or padId) .. ".")
 		if again.tier == 1 then
 			base.SetTier(player, 1)
-			notify.Say(player, "Porch complete. Stage 2 is open.")
+			notify.Say(player, "Porch complete. Graveyard Rugby Rush is open. Next: the Crypt Key.")
 		end
+		refreshTier(player)
+		Saves.Save(player)
+	end)
+end
+
+function Pads.TryUpgrade(player: Player, ownerUserId: number)
+	if player.UserId ~= ownerUserId then
+		notify.Say(player, "That porch belongs to someone else.")
+		return
+	end
+	if not Saves.IsLoaded(player) then
+		notify.Say(player, "Still clocking in your tips.")
+		return
+	end
+	local plot = plotOf(player)
+	if not plot then
+		return
+	end
+	local upgrade = PorchPads.Upgrade
+	local preview = PorchPads.PreviewUpgrade(plot.owned, base.GetTier(player), economy.GetCash(player))
+	if not preview.ok then
+		if preview.reason == "poor" then
+			notify.Say(player, "Need " .. tostring(upgrade.cost) .. " cash. Graveyard Rugby Rush pays 150.")
+		elseif preview.reason == "tier" then
+			notify.Say(player, "Finish the porch (bench, ice bath, bag shrine) first.")
+		elseif preview.reason == "already" then
+			notify.Say(player, "The crypt already knows your feet.")
+		end
+		return
+	end
+	if PlayerLock.IsBusy(player) then
+		notify.Say(player, "Syncing. Try the pad again.")
+		return
+	end
+	PlayerLock.Try(player, function()
+		local again = PorchPads.PreviewUpgrade(plot.owned, base.GetTier(player), economy.GetCash(player))
+		if not again.ok or not again.owned or not again.cost then
+			return
+		end
+		if not economy.TrySpend(player, again.cost, economy.Reasons.BasePad) then
+			notify.Say(player, "Need " .. tostring(upgrade.cost) .. " cash.")
+			return
+		end
+		plot.owned = again.owned
+		base.SetPad(player, upgrade.id, true)
+		spawnOwned(player, upgrade.id)
+		base.SetTier(player, math.max(base.GetTier(player), upgrade.tier))
+		notify.Say(player, "Crypt Key bought. Sore Foot Lava Crypt is open, behind the manor gate.")
 		refreshTier(player)
 		Saves.Save(player)
 	end)
@@ -230,9 +325,20 @@ function Pads.Load(player: Player, owned: any)
 			spawnOwned(player, def.id)
 		end
 	end
+	local upgrade = PorchPads.Upgrade
+	if owned[upgrade.id] == true and PorchPads.OwnsAll(restored) then
+		restored[upgrade.id] = true
+		base.SetPad(player, upgrade.id, true)
+		spawnOwned(player, upgrade.id)
+	end
 	plot.owned = restored
 	if PorchPads.OwnsAll(restored) then
-		base.SetTier(player, 1)
+		local earned = if restored[upgrade.id] then upgrade.tier else 1
+		base.SetTier(player, math.max(base.GetTier(player), earned))
+	end
+	local prompt = plot.prompts[upgrade.id]
+	if prompt and not restored[upgrade.id] then
+		prompt.Enabled = base.GetTier(player) >= upgrade.requiresTier
 	end
 	refreshTier(player)
 end

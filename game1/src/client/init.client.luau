@@ -37,6 +37,9 @@ title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(12, 8)
 title.Size = UDim2.new(1, -24, 0, 18)
 title.Font = Enum.Font.Gotham
+pcall(function()
+	title.Font = Enum.Font.Creepster
+end)
 title.TextSize = 14
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.fromRGB(255, 186, 92)
@@ -112,3 +115,5 @@ end
 
 local ShopGui = require(script.ShopGui)
 ShopGui.Attach(gui, showToast)
+
+require(script.Bats).Start()

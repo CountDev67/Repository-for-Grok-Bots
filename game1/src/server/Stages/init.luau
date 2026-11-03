@@ -1,7 +1,11 @@
 --!strict
--- Runs the two blockout courses. Finish pays once per trip back to that
--- course's start. Stage 2 checks BaseService.GetTier >= requiredTier (1).
+-- Runs the courses. Finish pays once per trip back to that course's start.
+-- Each course checks BaseService.GetTier >= requiredTier (0, 1, 2).
+-- Courses can have several checkpoints; the save stores "courseId" for the
+-- first one and "courseId#n" for later ones (CourseLayout.EncodeCheckpoint).
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CourseLayout = require(ReplicatedStorage.Shared.CourseLayout)
 local Parts = require(script.Parent.Parts)
 local PlayerLock = require(script.Parent.PlayerLock)
 local Saves = require(script.Parent.Saves)
@@ -13,8 +17,10 @@ type Course = {
 	displayName: string,
 	payout: number,
 	requiredTier: number,
+	lockHint: string?,
 	startPart: BasePart,
 	checkpointPart: BasePart,
+	checkpointParts: { BasePart }?,
 	finishPart: BasePart,
 	gate: BasePart?,
 }
@@ -28,6 +34,7 @@ local readyFn: ((Player) -> boolean)? = nil
 
 local runCourse: { [number]: string } = {}
 local checkpointCFrame: { [number]: CFrame } = {}
+local checkpointKey: { [number]: string } = {}
 local clears: { [number]: { [string]: number } } = {}
 local lastBounce: { [number]: number } = {}
 
@@ -59,6 +66,27 @@ local function unlocked(player: Player, course: Course): boolean
 	return base.GetTier(player) >= course.requiredTier
 end
 
+local function lockedMessage(course: Course): string
+	if course.requiredTier <= 1 then
+		return course.displayName .. " is locked. Buy the bench, the ice bath, and the bag shrine."
+	end
+	return course.displayName .. " is locked. Buy the Crypt Key on your porch."
+end
+
+local function checkpointList(course: Course): { BasePart }
+	return course.checkpointParts or { course.checkpointPart }
+end
+
+local function checkpointPartFor(course: Course, number: number): BasePart?
+	local list = checkpointList(course)
+	return list[math.clamp(number, 1, #list)]
+end
+
+local function clearCheckpoint(userId: number)
+	checkpointCFrame[userId] = nil
+	checkpointKey[userId] = nil
+end
+
 local function bounce(player: Player, message: string)
 	local now = os.clock()
 	local userId = userIdOf(player)
@@ -78,10 +106,15 @@ local function arm(player: Player, course: Course)
 		return
 	end
 	if not unlocked(player, course) then
-		bounce(player, "Stage 2 is locked. Buy the bench, the ice bath, and the bag shrine.")
+		bounce(player, lockedMessage(course))
 		return
 	end
-	runCourse[userIdOf(player)] = course.id
+	local userId = userIdOf(player)
+	if runCourse[userId] ~= course.id then
+		-- Starting a different course drops the old course's checkpoint.
+		clearCheckpoint(userId)
+	end
+	runCourse[userId] = course.id
 end
 
 local function bumpClear(userId: number, courseId: string)
@@ -103,7 +136,7 @@ local function complete(player: Player, course: Course)
 		return
 	end
 	if not unlocked(player, course) then
-		bounce(player, "Stage 2 is locked. Finish the porch first.")
+		bounce(player, lockedMessage(course))
 		return
 	end
 	if PlayerLock.IsBusy(player) then
@@ -115,7 +148,7 @@ local function complete(player: Player, course: Course)
 			return
 		end
 		runCourse[userId] = nil
-		checkpointCFrame[userId] = nil
+		clearCheckpoint(userId)
 		bumpClear(userId, course.id)
 		economy.AddCash(player, course.payout, economy.Reasons.StageClear)
 		notify.Say(
@@ -160,25 +193,33 @@ function Stages.Start(deps: {
 		hookTouch(course.startPart, function(player)
 			arm(player, course)
 		end)
-		hookTouch(course.checkpointPart, function(player)
-			if not isReady(player) then
-				return
-			end
-			if not unlocked(player, course) then
-				bounce(player, "Stage 2 is locked. Finish the porch first.")
-				return
-			end
-			if runCourse[userIdOf(player)] ~= course.id then
-				return
-			end
-			local stand = Parts.standCFrame(course.checkpointPart)
-			local existing = checkpointCFrame[userIdOf(player)]
-			if existing and (existing.Position - stand.Position).Magnitude < 2 then
-				return
-			end
-			checkpointCFrame[userIdOf(player)] = stand
-			notify.Say(player, "Checkpoint. The Count's feet thank you.")
-		end)
+		for number, checkpointPart in checkpointList(course) do
+			hookTouch(checkpointPart, function(player)
+				if not isReady(player) then
+					return
+				end
+				if not unlocked(player, course) then
+					bounce(player, lockedMessage(course))
+					return
+				end
+				local userId = userIdOf(player)
+				if runCourse[userId] ~= course.id then
+					return
+				end
+				local key = CourseLayout.EncodeCheckpoint(course.id, number)
+				if checkpointKey[userId] == key then
+					return
+				end
+				-- Never move a saved checkpoint backwards on the same course.
+				local _, savedNumber = CourseLayout.DecodeCheckpoint(checkpointKey[userId])
+				if checkpointKey[userId] ~= nil and savedNumber > number then
+					return
+				end
+				checkpointKey[userId] = key
+				checkpointCFrame[userId] = Parts.standCFrame(checkpointPart)
+				notify.Say(player, "Checkpoint " .. tostring(number) .. ". The Count's feet thank you.")
+			end)
+		end
 		hookTouch(course.finishPart, function(player)
 			complete(player, course)
 		end)
@@ -189,7 +230,7 @@ function Stages.Start(deps: {
 					return
 				end
 				if not unlocked(player, course) then
-					bounce(player, "Stage 2 opens when the porch has all three buys.")
+					bounce(player, lockedMessage(course))
 				end
 			end)
 		end
@@ -213,24 +254,14 @@ end
 function Stages.Forget(player: Player)
 	local userId = userIdOf(player)
 	runCourse[userId] = nil
-	checkpointCFrame[userId] = nil
+	clearCheckpoint(userId)
 	clears[userId] = nil
 	lastBounce[userId] = nil
 end
 
 function Stages.Export(player: Player): { checkpoint: string, clears: { [string]: number } }
 	local userId = userIdOf(player)
-	local checkpoint = ""
-	local cf = checkpointCFrame[userId]
-	if cf then
-		for _, course in courses do
-			local stand = Parts.standCFrame(course.checkpointPart)
-			if (stand.Position - cf.Position).Magnitude < 2 then
-				checkpoint = course.id
-				break
-			end
-		end
-	end
+	local checkpoint = checkpointKey[userId] or ""
 	local copy: { [string]: number } = table.clone(clears[userId] or {})
 	return { checkpoint = checkpoint, clears = copy }
 end
@@ -249,15 +280,21 @@ function Stages.Load(player: Player, data: any)
 		end
 		clears[userId] = row
 	end
-	local courseId = data.checkpoint
-	if type(courseId) ~= "string" or courseId == "" then
+	local courseId, number = CourseLayout.DecodeCheckpoint(data.checkpoint)
+	if not courseId then
 		return
 	end
 	local course = courseById(courseId)
 	if not course then
 		return
 	end
-	checkpointCFrame[userId] = Parts.standCFrame(course.checkpointPart)
+	local part = checkpointPartFor(course, number)
+	if not part then
+		return
+	end
+	local list = checkpointList(course)
+	checkpointKey[userId] = CourseLayout.EncodeCheckpoint(course.id, math.clamp(number, 1, #list))
+	checkpointCFrame[userId] = Parts.standCFrame(part)
 	runCourse[userId] = course.id
 	if player.Character then
 		player.Character:PivotTo(checkpointCFrame[userId])
@@ -275,6 +312,22 @@ function Stages.Revive(player: Player): boolean
 	pivot(player, cf)
 	notify.Say(player, "Ankles iced. Back on the route.")
 	return true
+end
+
+-- Fell onto the ground: back to the checkpoint (or course start / spawn), no death.
+function Stages.Rescue(player: Player)
+	local userId = userIdOf(player)
+	local saved = checkpointCFrame[userId]
+	if saved then
+		pivot(player, saved)
+		return
+	end
+	local course = courseById(runCourse[userId] or "")
+	if course and unlocked(player, course) then
+		pivot(player, Parts.standCFrame(course.startPart))
+		return
+	end
+	pivot(player, spawnCFrame)
 end
 
 -- Used by the dev-product stage skip once the shop exists.

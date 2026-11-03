@@ -8,8 +8,10 @@ These are the live grants in `CourseLayout` and `PorchPads`. They are flat on pu
 
 | Action | Cash | Notes |
 | --- | --- | --- |
-| Suburbs Delivery finish | 50 | 7 jumps, one checkpoint. The checkpoint does not pay. Repeatable: you are sent back to the start. |
-| Stage 2 finish | 150 | Harder copy (narrower, taller steps, one wider gap). Requires `BaseService.GetTier(player) >= 1`. |
+| Suburbs Delivery finish | 50 | 15 obstacles, two checkpoints. Checkpoints do not pay. Repeatable: you are sent back to the start. |
+| Graveyard Rugby Rush finish (`stage2`) | 150 | 16 obstacles, two checkpoints. Requires `BaseService.GetTier(player) >= 1`. |
+| Sore Foot Lava Crypt finish (`stage3`) | 400 | 17 obstacles, two checkpoints. Requires tier 2. |
+| Crypt Key | −1,500 | Porch pad after the first three. Sets tier → 2. Equals `BaseConfig` tier 2's price. |
 | Porch bench | −50 | Spawns a seat. |
 | Ice bath | −100 | Spawns a tub. |
 | DoorDash bag shrine | −150 | Spawns a red bag on a pedestal. |
@@ -28,7 +30,7 @@ From `src/shared/BaseConfig`. The other team owns these numbers.
 | Tier | Id | Placeholder price | How the current obby relates |
 | --- | --- | --- | --- |
 | 1 | `porch` | 300 | Exactly the three pads. The slice charges the pads, then sets tier to 1. |
-| 2 | `walkup` | 12,000 | Not paid by the obby in any reasonable session. 12,000 / 150 = 80 Stage 2 runs. This price assumes **tycoon income you have not built yet**. |
+| 2 | `cryptkey` | 1,500 | Paid by the obby: 10 Graveyard Rugby Rush runs. Was a 12,000 placeholder; lowered so Stage 3 is reachable without a tycoon. Raise it together with `PorchPads.Upgrade.cost` once droppers exist. |
 | 3 | `keep` | 80,000 | Same. Endgame placeholder. |
 
 If you change tier 1, change the pad costs too. A test locks `BaseConfig.Get(1).price` to the sum of the pads.

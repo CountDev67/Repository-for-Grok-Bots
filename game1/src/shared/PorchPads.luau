@@ -53,6 +53,34 @@ end
 
 PorchPads.Defs = DEFS
 
+-- Tier 2: one more porch buy after the first three. Opens Sore Foot Lava Crypt.
+-- Its cost is BaseConfig tier 2's price (a test keeps them equal).
+PorchPads.Upgrade = {
+	id = "cryptkey",
+	name = "Crypt Key",
+	cost = 1500,
+	kind = "cryptkey",
+	blurb = "A big goofy skeleton key. Opens the lava crypt behind the manor.",
+	tier = 2,
+	requiresTier = 1,
+}
+
+function PorchPads.PreviewUpgrade(owned: OwnedMap, tier: number, cash: number): Preview
+	local def = PorchPads.Upgrade
+	if owned[def.id] == true or tier >= def.tier then
+		return { ok = false, reason = "already", cost = def.cost }
+	end
+	if tier < def.requiresTier or not PorchPads.OwnsAll(owned) then
+		return { ok = false, reason = "tier", cost = def.cost }
+	end
+	if type(cash) ~= "number" or cash < def.cost then
+		return { ok = false, reason = "poor", cost = def.cost }
+	end
+	local nextOwned: OwnedMap = table.clone(owned)
+	nextOwned[def.id] = true
+	return { ok = true, reason = "ok", cost = def.cost, owned = nextOwned, tier = def.tier }
+end
+
 function PorchPads.Get(id: string): PadDef?
 	return BY_ID[id]
 end

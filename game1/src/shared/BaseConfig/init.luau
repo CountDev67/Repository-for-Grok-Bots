@@ -1,9 +1,10 @@
 --!strict
 -- TODO(base-team): Replace these placeholder tiers with the real tycoon.
 -- Tier 1's price matches the three porch pads (50 + 100 + 150). The slice
--- charges those pads, then sets BaseService tier to 1. Tier 2 and 3 prices
--- are stubs for droppers you have not built yet — the obby alone is not
--- meant to pay them. See docs/PAYOUT_CURVE.md before retuning.
+-- charges those pads, then sets BaseService tier to 1. Tier 2 is the porch's
+-- Crypt Key (PorchPads.Upgrade, 1500 = 10 Graveyard Rugby Rush runs) and opens
+-- Sore Foot Lava Crypt. Tier 3 is still a stub for droppers you have not built
+-- yet. See docs/PAYOUT_CURVE.md before retuning.
 
 local BaseConfig = {
 	tiers = {
@@ -16,10 +17,10 @@ local BaseConfig = {
 		},
 		{
 			tier = 2,
-			id = "walkup",
-			name = "Walk-up",
-			price = 12000,
-			blurb = "TODO(base-team): stairs, droppers, and a real price.",
+			id = "cryptkey",
+			name = "Crypt Key",
+			price = 1500,
+			blurb = "Opens Sore Foot Lava Crypt. TODO(base-team): droppers can raise this.",
 		},
 		{
 			tier = 3,

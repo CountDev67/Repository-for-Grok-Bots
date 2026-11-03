@@ -17,12 +17,31 @@
         "Client": {
           "$path": "src/client"
         }
+      },
+      "$properties": {
+        "CharacterUseJumpPower": false,
+        "CharacterWalkSpeed": 16,
+        "CharacterJumpHeight": 7.2
       }
     },
     "Workspace": {
       "$properties": {
         "FallenPartsDestroyHeight": -80,
-        "Gravity": 196.2
+        "Gravity": 196.2,
+        "StreamingEnabled": false
+      }
+    },
+    "Players": {
+      "$properties": {
+        "RespawnTime": 2.5
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "Technology": "Future",
+        "ClockTime": 0.4,
+        "GlobalShadows": true,
+        "Brightness": 1.8
       }
     }
   }

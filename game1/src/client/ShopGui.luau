@@ -129,10 +129,15 @@ function ShopGui.Attach(gui: ScreenGui, toast: (string) -> ())
 				toast(def.name .. " still has placeholder id 0.")
 				return
 			end
-			if kind == "pass" then
-				MarketplaceService:PromptGamePassPurchase(def.id)
-			else
-				MarketplaceService:PromptProductPurchase(def.id)
+			local ok = pcall(function()
+				if kind == "pass" then
+					MarketplaceService:PromptGamePassPurchase(def.id)
+				else
+					MarketplaceService:PromptProductPurchase(def.id)
+				end
+			end)
+			if not ok then
+				toast("Purchases need a published place.")
 			end
 		end)
 	end

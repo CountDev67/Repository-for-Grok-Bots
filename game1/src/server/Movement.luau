@@ -13,13 +13,23 @@ function Movement.SetSpeedProvider(provider: (Player) -> number?)
 	speedProvider = provider
 end
 
+-- World/StarterPlayer values also live in default.project.json; these writes are
+-- best-effort because some properties are not script-writable at runtime.
+local function trySet(object: any, property: string, value: any)
+	local ok, err = pcall(function()
+		object[property] = value
+	end)
+	if not ok then
+		warn(`[Movement] skipped {property}: {err}`)
+	end
+end
+
 function Movement.ApplyWorld()
-	workspace.Gravity = CourseLayout.GRAVITY
-	workspace.FallenPartsDestroyHeight = -80
+	trySet(workspace, "Gravity", CourseLayout.GRAVITY)
 	local starter = game:GetService("StarterPlayer")
-	starter.CharacterWalkSpeed = CourseLayout.WALK_SPEED
-	starter.CharacterJumpHeight = CourseLayout.JUMP_HEIGHT
-	starter.CharacterUseJumpPower = false
+	trySet(starter, "CharacterUseJumpPower", false)
+	trySet(starter, "CharacterWalkSpeed", CourseLayout.WALK_SPEED)
+	trySet(starter, "CharacterJumpHeight", CourseLayout.JUMP_HEIGHT)
 end
 
 function Movement.ApplyCharacter(player: Player, character: Model)
