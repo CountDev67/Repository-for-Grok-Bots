@@ -1,0 +1,127 @@
+--!strict
+local harness = require("./harness")
+local Economy = require("../../src/shared/Economy")
+
+local function player(id: number)
+	return { UserId = id, Name = "P" .. tostring(id) }
+end
+
+local function fails(fn: () -> ())
+	local ok = pcall(fn)
+	if ok then
+		error("expected an error", 2)
+	end
+end
+
+harness.test("GetCash starts at 0", function()
+	Economy._reset()
+	harness.assertEq(Economy.GetCash(player(1)), 0)
+end)
+
+harness.test("AddCash updates balance and fires Changed", function()
+	Economy._reset()
+	local seen: { any } = {}
+	local connection = Economy.Changed:Connect(function(...)
+		table.insert(seen, { ... })
+	end)
+	Economy.AddCash(player(1), 50, Economy.Reasons.StageClear)
+	connection:Disconnect()
+	harness.assertEq(Economy.GetCash(player(1)), 50)
+	harness.assertEq(seen[1][2], 50)
+	harness.assertEq(seen[1][3], 50)
+	harness.assertEq(seen[1][4], "stage_clear")
+end)
+
+harness.test("AddCash stacks and players are isolated", function()
+	Economy._reset()
+	Economy.AddCash(player(1), 50, "stage_clear")
+	Economy.AddCash(player(1), 50, "stage_clear")
+	Economy.AddCash(player(2), 150, "stage_clear")
+	harness.assertEq(Economy.GetCash(player(1)), 100)
+	harness.assertEq(Economy.GetCash(player(2)), 150)
+end)
+
+harness.test("AddCash rejects bad amounts and empty reasons", function()
+	Economy._reset()
+	fails(function()
+		Economy.AddCash(player(1), 0, "stage_clear")
+	end)
+	fails(function()
+		Economy.AddCash(player(1), -5, "stage_clear")
+	end)
+	fails(function()
+		Economy.AddCash(player(1), 1.5, "stage_clear")
+	end)
+	fails(function()
+		Economy.AddCash(player(1), 10, "")
+	end)
+	harness.assertEq(Economy.GetCash(player(1)), 0)
+end)
+
+harness.test("TrySpend succeeds and fires a negative delta", function()
+	Economy._reset()
+	Economy.AddCash(player(1), 50, "stage_clear")
+	local deltas = {}
+	local connection = Economy.Changed:Connect(function(_player, _cash, delta)
+		table.insert(deltas, delta)
+	end)
+	local ok = Economy.TrySpend(player(1), 50, Economy.Reasons.BasePad)
+	connection:Disconnect()
+	harness.assertTrue(ok)
+	harness.assertEq(Economy.GetCash(player(1)), 0)
+	harness.assertEq(deltas[1], -50)
+end)
+
+harness.test("TrySpend fails without changing cash or firing", function()
+	Economy._reset()
+	Economy.AddCash(player(1), 40, "stage_clear")
+	local fired = 0
+	local connection = Economy.Changed:Connect(function()
+		fired += 1
+	end)
+	local ok = Economy.TrySpend(player(1), 50, "base_pad")
+	connection:Disconnect()
+	harness.assertFalse(ok)
+	harness.assertEq(Economy.GetCash(player(1)), 40)
+	harness.assertEq(fired, 0)
+end)
+
+harness.test("2x multiplier applies to stage clears and not pad refunds", function()
+	Economy._reset()
+	Economy.SetEarnMultiplier(player(1), 2)
+	Economy.AddCash(player(1), 50, "stage_clear")
+	harness.assertEq(Economy.GetCash(player(1)), 100)
+	Economy.AddCash(player(1), 50, "dev_product")
+	harness.assertEq(Economy.GetCash(player(1)), 150)
+end)
+
+harness.test("Hydrate replaces cash without the earn multiplier", function()
+	Economy._reset()
+	Economy.SetEarnMultiplier(player(1), 2)
+	Economy.Hydrate(player(1), 20)
+	harness.assertEq(Economy.GetCash(player(1)), 20)
+	Economy.Hydrate(player(1), 20)
+	harness.assertEq(Economy.GetCash(player(1)), 20)
+end)
+
+harness.test("Disconnect stops Changed", function()
+	Economy._reset()
+	local fired = 0
+	local connection = Economy.Changed:Connect(function()
+		fired += 1
+	end)
+	connection:Disconnect()
+	Economy.AddCash(player(1), 50, "stage_clear")
+	harness.assertEq(fired, 0)
+end)
+
+harness.test("client authority rejects AddCash", function()
+	Economy._reset()
+	Economy._setAuthority(false)
+	local ok = pcall(function()
+		Economy.AddCash(player(1), 50, "stage_clear")
+	end)
+	Economy._setAuthority(nil)
+	harness.assertFalse(ok)
+	harness.assertEq(Economy.GetCash(player(1)), 0)
+end)
